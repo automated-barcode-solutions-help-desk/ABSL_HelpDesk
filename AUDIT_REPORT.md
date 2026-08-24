@@ -1,0 +1,304 @@
+# ABSL Helpdesk — Pre-Launch Audit and Remediation Report
+
+**Prepared for:** Director / CEO, Automated Barcode Solutions (Pvt) Ltd
+**Subject:** Phase 1 platform — full code, security, data and product review
+**Date:** 22 August 2026
+**Scope:** Every file in the repository, the Supabase schema and policies, the
+notification worker, the browser application, and the delivered product
+measured against the nineteen Phase 1 sequence diagrams.
+
+---
+
+## 1. Executive summary
+
+The Phase 1 design work was sound. The database carried the right ideas from
+the start — optimistic locking on ticket updates, a row-locked atomic stock
+decrement, a notification queue with retry and dead-letter handling. Those are
+the instincts of a system built to last, and they were in place before this
+review.
+
+The implementation, as it stood, could not have been put in front of customers.
+The review found **four critical security defects**, any one of which would
+have handed control of the platform to a stranger, and **a migration that had
+never successfully run**, which meant a third of the intended database
+protections did not exist at all. Separately, several workflows that appear in
+the diagram deck had no implementation behind them, and photographs uploaded by
+customers were stored but never shown to anyone.
+
+All of it has been fixed. The security defects are closed, the migration is
+corrected, the missing workflows are built, and the codebase now has an
+automated test suite, security headers, an error boundary and a launch runbook.
+
+**Assessment: ready for a staged production launch** once the eight steps in
+[LAUNCH_CHECKLIST.md](LAUNCH_CHECKLIST.md) are complete. A one-week pilot with
+one customer company plus the ABSL technicians is recommended before general
+release — not because of any known defect, but because no real user has used
+this system yet and there is no substitute for that.
+
+---
+
+## 2. Critical findings and their resolution
+
+### 2.1 Anyone could register themselves as an administrator
+
+**Severity: Critical — full platform compromise**
+
+The signup form sent a `role` field to the database, and the database trusted
+it. The dropdown offered only "Customer" and "Technician", but that dropdown
+lives in the browser, where anyone can change it. A single request with
+`role: "admin"` created an administrator account.
+
+**Fixed.** The role a client sends is now treated as a *request*. Every account
+is created as an unprivileged customer. A staff role is granted only by an
+approved administrator through `admin_review_registration()`, a database
+function that verifies the caller before it does anything. A staff request is
+never auto-approved, even from a verified company domain.
+
+### 2.2 Any user could promote themselves after signing up
+
+**Severity: Critical — privilege escalation**
+
+The security policy that let users edit their own profile placed no limit on
+*which* fields they could edit. One request setting `role = 'admin'` and
+`approval_status = 'approved'` on their own row made any customer an
+administrator.
+
+**Fixed.** PostgreSQL has no column-level row security, so a database trigger
+now rejects any change a non-administrator makes to their own role, approval
+status or company.
+
+### 2.3 An unapproved account could read every ticket in the system
+
+**Severity: Critical — data breach across all customers**
+
+Access checks asked only "what role is this person?" and never "has this person
+been approved?". The "waiting for approval" screen existed only in the browser.
+An account that had registered but not been approved could bypass the interface
+entirely and read every ticket belonging to every customer through the API.
+
+**Fixed.** The role function now returns a role only for an approved profile.
+Because every policy in the system routes through that one function, this
+closed the hole everywhere at once.
+
+### 2.4 The login page gave away administrator credentials
+
+**Severity: Critical — unauthenticated administrative access**
+
+The login screen carried "Quick Demo Login" buttons that filled in live
+production credentials, including the CEO's administrator account. The
+passwords were also committed to the repository in a seeding script.
+
+**Fixed.** The buttons are removed, the seeding script now refuses to run and
+has been replaced by a script that hands out no passwords at all. **The three
+exposed passwords must still be rotated** — that is step 2 of the launch
+runbook and only ABSL can do it.
+
+### 2.5 A database migration had never run
+
+**Severity: High — a third of the intended protections were absent**
+
+`0002_production_ready.sql` referenced three columns that do not exist. The
+script aborted on its first policy and rolled back entirely. The work it was
+supposed to do had never reached the database: no signup trigger (so new
+registrations created an account with no profile), no admin alerts table, and
+four tables left with security enabled and no policy at all, making them
+permanently unreadable.
+
+**Fixed.** The column and function-signature errors are corrected and the
+migration now applies cleanly.
+
+### 2.6 Failed writes reported success
+
+**Severity: High — silent data loss and false confidence**
+
+When a security policy blocked a write, the API returned "success, zero rows"
+and the interface showed a green confirmation. Deleting a ticket, approving a
+user and retrying a notification all displayed success while the database was
+untouched. Several of these actions had no policy permitting them at all, so
+they had *never once* worked.
+
+**Fixed.** Every write now asks for the affected rows back and treats an empty
+result as a failure with a clear message. The missing policies have been added.
+
+### 2.7 Customer photographs and voice notes were unreachable
+
+**Severity: High — the product did not do what it promised**
+
+Attachments uploaded with a ticket were stored correctly and then never shown
+to anybody. The detail screen displayed the sentence "Photos and voice notes
+are stored with the ticket" and nothing else. An agent could not see the
+photograph of the fault the customer had taken the trouble to send.
+
+**Fixed.** Photographs now appear as a gallery and open full size; voice notes
+play in the browser. Because the storage buckets are private, each file is
+served through a short-lived signed link.
+
+### 2.8 Storage buckets had no access rules
+
+**Severity: High — customer photographs exposed**
+
+The three storage buckets were created by hand with no policies.
+
+**Fixed.** All three are forced private, and access to a file is tied to access
+to its ticket. Inventory imports are administrator-only.
+
+### 2.9 The notification worker could send duplicate emails
+
+**Severity: Medium — customer-visible defect**
+
+Two overlapping scheduled runs would both pick up the same pending emails.
+
+**Fixed.** The worker now claims a batch with a row lock that skips rows
+another run already holds. Retry backoff is exponential rather than linear, and
+the endpoint can be protected with a shared secret.
+
+---
+
+## 3. Phase 1 completeness
+
+Measured against the nineteen diagrams in the Phase 1 deck.
+
+| # | Workflow | Before | Now |
+|---|---|---|---|
+| 1–4 | Registration, approval, login, re-apply | Working, but role self-assignment | Working and safe |
+| 5 | Ticket creation with photo and voice note | Uploads worked, nothing displayed; no way to record audio | Full: in-browser recording, validated uploads, gallery playback |
+| 6 | Callback request | A checkbox that nothing acted on | Real queue: request with a number, agent works the queue, one-tap dial, completion note on the thread |
+| 7 | Comment thread | Worked; every author shown as "Team member" | Real names and roles, live updates, email on reply |
+| 8 | Status flow | Worked | Working, plus a full history panel showing who changed what and when |
+| 9 | Location tracking | Text search only; the coordinate columns were never written | GPS capture with accuracy, map opens on the exact pin |
+| 10 | Agent ticket list and detail | Showed the literal words "Customer" and "Company" | Real customer and company names, search, filters, pagination |
+| 11 | Ticket creation errors | Retry dialogue present | Plus size and type validation before upload, and orphaned-file cleanup |
+| 12 | Technician assignment and reassignment | Assignment only, no audit, no notification | Hand-over with a reason, note on the thread, email to the technician, audit entry |
+| 13 | Parts and inventory "Work" button | Atomic decrement worked, but fired against whichever ticket was selected | Confirmation, ownership check, parts-used list, automatic low-stock alert |
+| 14 | Notification dispatch | Worked | Plus assignment and reply notifications |
+| 15 | Company account limits | Written against a hard-coded placeholder; never saved | Real company selection and update |
+| 16 | Inventory CSV cleanup | Script worked | Unchanged; import is still a manual paste, which is the right level for a yearly task |
+| 17 | Realtime updates | Worked, but every event reloaded everything for everyone | Coalesced into a single refresh |
+| 18 | Concurrent update conflict | Offered "Refresh & Overwrite", discarding the other person's change | Shows what actually changed and asks the second person to decide |
+| 19 | Dead-letter escalation | The alert trigger referenced columns that do not exist, so notifications could never dead-letter | Working, with an admin digest that does not silently clear unread alerts |
+
+**All nineteen workflows are now implemented.**
+
+---
+
+## 4. What else was improved
+
+**Separate role interfaces.** The four portals now load only the data their
+role needs — a technician's browser no longer requests the approval queue or
+the notification log. Each has its own name, accent colour and statistics.
+Technicians see only jobs assigned to them; previously they saw every assigned
+job in the system.
+
+**Automated tests.** Twenty-five tests covering escaping, identifier
+validation, upload rules, role permission maths, search and filtering, phone
+validation and error mapping. They run against the same file the browser loads.
+
+```bash
+npm test
+```
+
+**Security headers.** A Content-Security-Policy that permits scripts only from
+the site itself, plus HSTS, frame denial, MIME-sniffing protection and a
+permissions policy that grants microphone and location only to this site.
+Configured for Netlify, Cloudflare Pages and Vercel.
+
+**No third-party runtime dependency.** The Supabase client was loaded from a
+public CDN on every page load, meaning a compromise of that CDN would be a
+compromise of ABSL's helpdesk. It is now served from the site itself at a
+pinned version.
+
+**Error handling.** A global error boundary catches anything unexpected and
+tells the user plainly instead of leaving a half-drawn screen. Database errors
+are translated into sentences a customer can act on. Loss of connection and
+session expiry are both handled.
+
+**Privacy at rest.** Ticket contents, customer names and comment bodies were
+being written to browser storage on every screen refresh and left there after
+sign-out — a genuine problem on a shared technician tablet. Only interface
+preferences are stored now.
+
+**Data quality.** Length limits on titles, descriptions and comments;
+coordinate range checks; priority restricted to the three real values.
+
+**Performance.** Nine indexes on the columns every list actually filters by;
+ticket lists paginated; ticket detail assembled in one database call rather
+than five.
+
+**Accessibility.** Visible keyboard focus, labels on every control, live
+regions for status messages, and reduced-motion support.
+
+---
+
+## 5. Architecture
+
+```
+Browser (static files, no build step)
+  ├── helpers.js   pure logic, unit tested
+  ├── app.js       views, state, data access
+  └── vendor/      pinned Supabase client
+        │
+        │  HTTPS + WSS, every request carries the user's token
+        ▼
+Supabase
+  ├── PostgreSQL       row-level security on every table
+  ├── Auth             email + password, verification required
+  ├── Storage          three private buckets, access tied to ticket access
+  ├── Realtime         ticket, comment and alert changes
+  └── Edge Function    notification worker, runs on a schedule
+        │
+        ▼
+      Resend  →  customer and staff email
+```
+
+The security model rests on one principle: **the browser is never trusted.**
+Every rule that matters — who may see a ticket, who may change a status, who
+may be granted a role, who may take a part from stock — is enforced inside the
+database by policies and functions. The interface hides buttons a person cannot
+use, but hiding them is a courtesy, not the control.
+
+---
+
+## 6. Risk register
+
+| Risk | Likelihood | Impact | Mitigation |
+|---|---|---|---|
+| Email domain not verified in Resend | Medium | High — no notifications reach anyone | Step 5 of the runbook; verify before launch |
+| Leaked passwords not rotated | Medium | Critical | Step 2 of the runbook; only ABSL can do it |
+| A regression ships unnoticed | Medium | Medium | 25 automated tests plus the manual pass in step 6 |
+| Load beyond a few dozen concurrent users | Low | Medium | Paginated and coalesced; not yet load tested |
+| Failure with no operator visibility | Medium | Medium | Users see errors; add a monitoring service in Phase 2 |
+| Backup never restored in a drill | Low | High | Schedule a restore test in the first month |
+| `xlsx` library has known advisories | Low | Low | Development-only, run on ABSL's own files, never in the web app |
+
+---
+
+## 7. Recommendations for Phase 2
+
+In the order they would pay off:
+
+1. **Error monitoring** — the single biggest operational gap. Without it, ABSL
+   learns about failures from customers phoning in.
+2. **End-to-end tests** for the nine workflows in the launch runbook, so a
+   release stops depending on someone remembering to check them.
+3. **Continuous integration** — run `npm test` on every push.
+4. **Backup restore drill** in the first month, then twice yearly.
+5. **SLA timers and reporting** — first response time, resolution time,
+   tickets per company. The data is already being captured; nothing reads it yet.
+6. **In-app inventory import**, replacing the manual SQL paste.
+7. **Push notifications or WhatsApp** for technicians in the field, where email
+   is the wrong channel.
+8. **Customer satisfaction rating** on ticket closure.
+
+---
+
+## 8. Verdict
+
+The platform is secure, complete against its Phase 1 specification, and ready
+for a staged launch once the runbook is executed. The engineering judgement in
+the original database design was good, and that foundation is what made this
+remediation a matter of hours rather than a rewrite.
+
+The one thing this report cannot certify is behaviour under real use. Nothing
+in this system has yet been touched by a customer who did not build it. That is
+the reason for the one-week pilot, and it is a reason of prudence, not of any
+known defect.

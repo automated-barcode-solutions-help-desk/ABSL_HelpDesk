@@ -1,0 +1,30 @@
+{
+  "name": "absl-helpdesk",
+  "version": "1.0.0",
+  "description": "Client support, field service and helpdesk platform for Automated Barcode Solutions (Pvt) Ltd.",
+  "main": "app.js",
+  "scripts": {
+    "test": "node --test",
+    "start": "npx serve -l 4173 .",
+    "build": "node scripts/build-dist.js",
+    "preview": "node scripts/build-dist.js && npx serve -l 4174 dist"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/CMDeegalla/absl-helpdesk.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/CMDeegalla/absl-helpdesk/issues"
+  },
+  "homepage": "https://github.com/CMDeegalla/absl-helpdesk#readme",
+  "devDependencies": {
+    "supabase": "^2.115.0",
+    "xlsx": "^0.18.5"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.112.3"
+  }
+}
