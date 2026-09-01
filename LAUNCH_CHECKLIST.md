@@ -1,7 +1,7 @@
 # ABSL Helpdesk — Launch Runbook
 
-Steps 1–6 are the go/no-go gate. Do not send the URL to customers until
-step 6 passes. Budget about two hours, most of it waiting on email delivery.
+Steps 1–7 are the go/no-go gate. Do not send the URL to customers until
+step 7 passes. Budget about two hours, most of it waiting on email delivery.
 
 For the full findings behind these steps, see [AUDIT_REPORT.md](AUDIT_REPORT.md).
 
@@ -19,6 +19,8 @@ run can be fixed and repeated from the top.
 | 2 | `supabase/migrations/0002_production_ready.sql` | Signup trigger, admin alerts, the policies 0001 left missing. **Never applied successfully before this fix.** |
 | 3 | `supabase/migrations/0003_security_hardening.sql` | Closes privilege escalation, adds write policies, private storage. |
 | 4 | `supabase/migrations/0004_feature_completion.sql` | Callback queue, reassignment, GPS, attachments, audit trail, indexes. |
+| 5 | `supabase/migrations/0005_video_receipts_site_contact.sql` | Video attachments, site contact number, resolution receipts. |
+| 6 | `supabase/migrations/0006_audit_fixes.sql` | Two defects from the second-pass audit — see AUDIT_REPORT.md §7. |
 
 Check whether 0001 is already in place first:
 
@@ -26,7 +28,7 @@ Check whether 0001 is already in place first:
 select table_name from information_schema.tables where table_schema = 'public' order by table_name;
 ```
 
-Verify all four applied:
+Verify all six applied:
 
 ```sql
 select
@@ -35,10 +37,16 @@ select
   (select count(*) from pg_trigger where tgname = 'guard_profile_privileges')   as profile_guard,
   (select count(*) from pg_proc where proname = 'admin_review_registration')    as review_rpc,
   (select count(*) from pg_proc where proname = 'reassign_ticket')              as reassign_rpc,
-  (select count(*) from pg_views where viewname = 'staff_directory')            as staff_view;
+  (select count(*) from pg_views where viewname = 'staff_directory')            as staff_view,
+  (select count(*) from information_schema.tables where table_name = 'ticket_receipts') as receipts_table,
+  (select count(*) from pg_proc where proname = 'generate_ticket_receipt')      as receipt_trigger_fn,
+  (select pg_get_functiondef('public.queue_comment_notification'::regproc) like '%assigned_technician_id%') as reply_notify_fixed;
 ```
 
-Expect 30+ policies and 1 for each of the other five.
+Expect 30+ policies, 1 for every other column, and `reply_notify_fixed = true`.
+That last check specifically confirms 0006 applied — `queue_comment_notification()`
+is `CREATE OR REPLACE`, so it has no separate object to count; the text of the
+live function is the only reliable proof.
 
 Then check nobody was left without a profile row:
 
@@ -73,7 +81,40 @@ the application itself can no longer grant a privileged role to anyone.
 
 ---
 
-## 3. Auth and storage settings (10 min)
+## 3. Upgrade off both free plans (10 min, needs CEO approval)
+
+Two services are on their free tier, and both have limits this specific
+product will hit in ordinary use, not edge cases.
+
+**Supabase Free:**
+- The project **auto-pauses after 7 days with no API activity** — a quiet
+  week takes the whole platform offline until someone manually resumes it
+  from the dashboard.
+- **1 GB total file storage** — a few dozen ticket photos exhausts it.
+- **No automatic backups at all** — nothing to restore from if data is ever
+  lost or corrupted.
+
+Upgrade: Project Settings → Billing → Upgrade to **Pro ($25/month)**. Removes
+the auto-pause, raises storage to 100 GB, adds daily backups with 7-day
+retention. Full case in AUDIT_REPORT.md §6.1.
+
+**Resend Free:**
+- **100 emails/day.** A single ticket's life cycle (created, assigned, a
+  couple of replies, resolved, closed) is roughly 6 emails. 15–20 tickets a
+  day already exceeds the cap — and this account now carries both the
+  notification worker *and* the SMTP auth emails from step 4.
+- Hitting the cap doesn't fail quietly: it dead-letters and fires a critical
+  admin alert per email, flooding the CEO Console on the busiest days.
+
+Upgrade: resend.com → Settings → Billing → **Pro ($20/month)**. Removes the
+daily cap. Full case in AUDIT_REPORT.md §6.2.
+
+**Combined: ~$45/month.** One figure to bring to the CEO, not two surprises
+found later.
+
+---
+
+## 4. Auth and storage settings (10 min)
 
 Authentication → Providers → Email:
 - **Confirm email: ON**
@@ -88,9 +129,31 @@ Database → Replication: enable for `tickets`, `ticket_comments`, `admin_alerts
 Storage: `ticket-photos`, `ticket-voice-notes`, `inventory-csv-imports` must
 all show **Private**. Migration 0003 sets this; confirm in the UI.
 
+**Custom SMTP — do not skip this.** Supabase's built-in mailer (used for
+signup verification and password reset) is rate-limited hard and explicitly
+not meant for production. It works fine in testing with 2–3 accounts and then
+silently fails once real signups arrive in a batch. Point it at Resend — the
+same account you set up in step 6, so there's nothing extra to buy:
+
+Authentication → Settings → SMTP Settings → **Enable Custom SMTP**:
+
+| Field | Value |
+|---|---|
+| Sender email | `helpdesk@automatedbarcode.net` |
+| Sender name | `ABSL Helpdesk` |
+| Host | `smtp.resend.com` |
+| Port | `465` |
+| Username | `resend` |
+| Password | your Resend API key |
+
+Trigger a fresh signup afterward and confirm the verification email arrives
+from the real domain, not a generic Supabase address. While in this section,
+Authentication → Email Templates is worth a pass too — the defaults say
+"Supabase," not ABSL.
+
 ---
 
-## 4. Deploy the site (15 min)
+## 5. Deploy the site (15 min)
 
 **Never upload the project folder.** It contains the SQL migrations, local
 tooling, and the disabled seed script whose backup still holds the old
@@ -113,7 +176,7 @@ After deploying, put the live URL into the Site URL field from step 3.
 
 ---
 
-## 5. Notification worker (20 min)
+## 6. Notification worker (20 min)
 
 ```bash
 supabase secrets set RESEND_API_KEY=your_resend_key
@@ -145,7 +208,7 @@ select status, count(*) from public.notifications group by status;
 
 ---
 
-## 6. Go / No-Go tests (30 min)
+## 7. Go / No-Go tests (30 min)
 
 ### Security — must all pass
 
@@ -211,7 +274,7 @@ PASS: 25 tests, 0 failures.
 
 ---
 
-## 7. Tell the CEO what is and is not covered
+## 8. Tell the CEO what is and is not covered
 
 Built and working: all nineteen Phase 1 diagrams.
 
@@ -230,7 +293,7 @@ Deliberately not attempted, and the honest risk register:
 - **Single region.** Latency for customers outside Sri Lanka depends on the
   Supabase region chosen.
 
-## 8. Recommended launch shape
+## 9. Recommended launch shape
 
 Soft-launch to one pilot company plus the ABSL technicians for a week, with the
 CEO Console watched daily. Full customer rollout after that week is quiet. The

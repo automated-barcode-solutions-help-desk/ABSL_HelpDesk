@@ -17,7 +17,13 @@ SELECT
   (SELECT count(*) FROM pg_proc     WHERE proname = 'reassign_ticket')            AS m0004_reassign,
   (SELECT count(*) FROM pg_proc     WHERE proname = 'request_callback')           AS m0004_callback,
   (SELECT count(*) FROM pg_views    WHERE viewname = 'staff_directory')           AS m0004_staff_view,
-  (SELECT count(*) FROM pg_proc     WHERE proname = 'ticket_detail')              AS m0004_detail_rpc;
+  (SELECT count(*) FROM pg_proc     WHERE proname = 'ticket_detail')              AS m0004_detail_rpc,
+  (SELECT count(*) FROM information_schema.tables WHERE table_name = 'ticket_receipts') AS m0005_receipts_table,
+  (SELECT count(*) FROM pg_proc     WHERE proname = 'generate_ticket_receipt')    AS m0005_receipt_trigger_fn,
+  (SELECT pg_get_functiondef('public.queue_comment_notification'::regproc) LIKE '%assigned_technician_id%') AS m0006_reply_notify_fixed;
+-- Expect: policies 30+, every other column 1, and m0006_reply_notify_fixed = true.
+-- That last one has no separate object to count — 0006 only CREATE OR REPLACEs
+-- an existing function — so the live function's own source is the only proof.
 -- Expect: policies 30+, and 1 in every other column.
 -- A 0 in an m0004_ column means 0004 has not applied.
 

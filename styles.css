@@ -1637,3 +1637,50 @@ body[data-portal] .topbar .eyebrow {
     max-height: none;
   }
 }
+
+/* ============================================================
+   Resolution receipts
+   ============================================================ */
+
+.mono {
+  font-family: ui-monospace, "SF Mono", "Cascadia Code", Consolas, monospace;
+  font-variant-numeric: tabular-nums;
+}
+
+/* The receipt modal carries more structure than a confirmation dialog, so
+   it gets a bit more room than the default 480px modal card. */
+#modalCard:has(.receipt) {
+  width: min(560px, 100%);
+}
+
+.receipt-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 18px;
+}
+
+.receipt-head h3 {
+  margin: 4px 0 0;
+  font-size: 22px;
+}
+
+.receipt .detail-facts {
+  margin: 0 0 4px;
+}
+
+.receipt hr {
+  border: none;
+  border-top: 1px solid var(--line-solid);
+  margin: 16px 0;
+}
+
+/* --- Video attachments (customer video-clip evidence) --- */
+.attachment-video video {
+  width: 100%;
+  max-height: 220px;
+  border-radius: var(--radius-sm);
+  background: #000;
+  display: block;
+}

@@ -79,6 +79,17 @@ test("validateUpload rejects an executable pretending to be a photo", () => {
   assert.equal(result.ok, false);
 });
 
+test("validateUpload accepts a normal phone video and rejects an oversized one", () => {
+  assert.equal(h.validateUpload({ size: 20 * 1024 * 1024, type: "video/mp4" }, "video").ok, true);
+  const result = h.validateUpload({ size: 80 * 1024 * 1024, type: "video/mp4" }, "video");
+  assert.equal(result.ok, false);
+  assert.match(result.message, /limit is/);
+});
+
+test("validateUpload accepts an iPhone .mov video clip", () => {
+  assert.equal(h.validateUpload({ size: 15 * 1024 * 1024, type: "video/quicktime" }, "video").ok, true);
+});
+
 test("validateUpload accepts a normal phone photo and a webm voice note", () => {
   assert.equal(h.validateUpload({ size: 2 * 1024 * 1024, type: "image/jpeg" }, "photo").ok, true);
   assert.equal(h.validateUpload({ size: 300 * 1024, type: "audio/webm" }, "voice").ok, true);

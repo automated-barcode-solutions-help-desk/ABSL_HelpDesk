@@ -50,7 +50,8 @@ const portals = {
       "companies",
       "approvals",
       "notifications",
-      "alerts"
+      "alerts",
+      "receipts"
     ]
   }
 };
@@ -80,6 +81,7 @@ const initialState = {
   selectedCompanyId: "",
   staffNames: {},
   callbackQueue: [],
+  receipts: [],
   filters: { query: "", status: "all", priority: "all" },
   page: 1
 };
@@ -263,6 +265,65 @@ function showModal({ title, body, icon = "info", actions = [] }) {
 
     overlay.classList.add("is-visible");
   });
+}
+
+// showModal() only ever displays plain text — right for a confirmation, not
+// for a document with real structure. A receipt gets its own layout, built
+// the same way as everything else: every dynamic value passed through
+// escapeHtml individually.
+function openReceiptModal(receiptId) {
+  const receipt = state.receipts.find((item) => item.id === receiptId);
+  const overlay = document.getElementById("modalOverlay");
+  const card = document.getElementById("modalCard");
+  if (!receipt || !overlay || !card) return;
+
+  const parts = Array.isArray(receipt.parts_used) ? receipt.parts_used : [];
+
+  card.innerHTML = `
+    <div class="receipt">
+      <div class="receipt-head">
+        <div>
+          <span class="small muted">Resolution receipt</span>
+          <h3 class="mono">${escapeHtml(receipt.receipt_number)}</h3>
+        </div>
+        <span class="badge badge-ok">Resolved</span>
+      </div>
+      <dl class="detail-facts">
+        <div><dt>Ticket</dt><dd>${escapeHtml(receipt.ticket_number)}</dd></div>
+        <div><dt>Resolved</dt><dd>${escapeHtml(formatDateTime(receipt.resolved_at))}</dd></div>
+        <div><dt>Company</dt><dd>${escapeHtml(receipt.company_name || "—")}</dd></div>
+        <div><dt>Customer</dt><dd>${escapeHtml(receipt.customer_name || "—")}</dd></div>
+        <div><dt>Technician</dt><dd>${escapeHtml(receipt.technician_name || "Unassigned")}</dd></div>
+        <div><dt>Resolved by</dt><dd>${escapeHtml(receipt.agent_name || "—")}</dd></div>
+      </dl>
+      <hr />
+      <p class="small muted" style="margin-bottom: 4px;">Problem</p>
+      <p>${escapeHtml(receipt.title)}</p>
+      ${
+        parts.length
+          ? `<hr />
+             <p class="small muted" style="margin-bottom: 4px;">Parts used</p>
+             <ul class="parts-list">
+               ${parts
+                 .map(
+                   (part) =>
+                     `<li><strong>${escapeHtml(part.name)}</strong> × ${Number(part.quantity)} <span class="small muted">${escapeHtml(part.sku)}</span></li>`
+                 )
+                 .join("")}
+             </ul>`
+          : `<hr /><p class="small muted">No parts were recorded against this ticket.</p>`
+      }
+      <div class="modal-actions">
+        <button class="primary-button" type="button" data-close-modal>Close</button>
+      </div>
+    </div>
+  `;
+
+  card.querySelector("[data-close-modal]").onclick = () => {
+    overlay.classList.remove("is-visible");
+  };
+
+  overlay.classList.add("is-visible");
 }
 
 function showConfirm(message, title = "Confirm Action") {
@@ -764,9 +825,11 @@ async function updateTicketStatus(ticketId, status) {
 
         const proceed = await showModal({
           title: "Someone got there first",
-          body: `Another team member changed this ticket while you were looking at it.
-                 It is now <strong>${escapeHtml(statusLabel(latest?.status || ticket.status))}</strong>.
-                 Do you still want to set it to <strong>${escapeHtml(statusLabel(status))}</strong>?`,
+          // showModal() escapes body as plain text — no HTML tags here, or
+          // the literal characters "<strong>" show up on screen.
+          body: `Another team member changed this ticket while you were looking at it. ` +
+                `It is now "${statusLabel(latest?.status || ticket.status)}". ` +
+                `Do you still want to set it to "${statusLabel(status)}"?`,
           icon: "warning",
           actions: [
             { label: "Keep their change", value: false, primary: false },
@@ -1032,7 +1095,8 @@ async function consumeRealInventory(ticketId, inventoryItemId, quantity) {
     return false;
   }
 
-  showToast("Inventory item used successfully.", "success");
+  // The caller (useInventory) shows its own success toast naming the part
+  // and the new stock level — a second generic one here just doubled up.
   return true;
 }
 
@@ -1098,6 +1162,7 @@ async function createRealTicket(ticket) {
     location_lat: Number.isFinite(lat) ? lat : null,
     location_lng: Number.isFinite(lng) ? lng : null,
     location_accuracy_m: Number.isFinite(accuracy) ? Math.round(accuracy) : null,
+    site_contact_phone: ticket.siteContactPhone || null,
     wants_callback: ticket.callback
   });
 
@@ -1161,14 +1226,17 @@ async function createTicket(event) {
   const photoFile = data.get("photo");
   // A voice note recorded in the browser wins over a file picked by hand.
   const voiceFile = recordedVoice || data.get("voice");
+  const videoFile = data.get("video");
   const wantsCallback = data.get("callback") === "on";
   const callbackPhone = String(data.get("callbackPhone") || "").trim();
+  const siteContactPhone = String(data.get("siteContactPhone") || "").trim();
 
   // Check the attachments before creating anything, so a rejected file does
   // not leave a ticket with half its evidence missing.
   for (const [file, kind] of [
     [photoFile, "photo"],
-    [voiceFile, "voice"]
+    [voiceFile, "voice"],
+    [videoFile, "video"]
   ]) {
     const check = validateUpload(file, kind);
     if (!check.ok) {
@@ -1179,6 +1247,11 @@ async function createTicket(event) {
 
   if (wantsCallback && !isValidPhone(callbackPhone)) {
     showToast("Add a phone number we can call you on, for example 0771234567.", "warning");
+    return;
+  }
+
+  if (siteContactPhone && !isValidPhone(siteContactPhone)) {
+    showToast("The site contact number doesn't look right — try 0771234567.", "warning");
     return;
   }
 
@@ -1196,6 +1269,7 @@ async function createTicket(event) {
     status: "new",
     priority: normalizePriority(data.get("priority")),
     location: data.get("location"),
+    siteContactPhone,
     callback: data.get("callback") === "on",
     version: 1,
     assignedAgent: "Unassigned",
@@ -1215,23 +1289,25 @@ async function createTicket(event) {
       ticket.id = realTicket.id;
       ticket.number = realTicket.ticket_number;
 
-      let photoFailed = false;
-      let voiceFailed = false;
+      // Each attachment type has its own bucket; upload() failure for one
+      // must not block the others, and each failed one gets offered a retry.
+      const uploads = [
+        { file: photoFile, bucket: "ticket-photos", kind: "photo" },
+        { file: voiceFile, bucket: "ticket-voice-notes", kind: "voice" },
+        { file: videoFile, bucket: "ticket-videos", kind: "video" }
+      ];
+      const failed = [];
 
-      if (photoFile && photoFile.size > 0) {
-        const path = await uploadAttachment(realTicket.id, photoFile, "ticket-photos", "photo");
-        if (!path) photoFailed = true;
+      for (const upload of uploads) {
+        if (!upload.file || upload.file.size === 0) continue;
+        const path = await uploadAttachment(realTicket.id, upload.file, upload.bucket, upload.kind);
+        if (!path) failed.push(upload);
       }
 
-      if (voiceFile && voiceFile.size > 0) {
-        const path = await uploadAttachment(realTicket.id, voiceFile, "ticket-voice-notes", "voice");
-        if (!path) voiceFailed = true;
-      }
-
-      if (photoFailed || voiceFailed) {
+      if (failed.length) {
         const retry = await showModal({
           title: "Attachment Upload Failed",
-          body: "The ticket was successfully created, but some attachments failed to upload. Check your connection and try again.",
+          body: `The ticket was successfully created, but ${failed.length === 1 ? "an attachment" : "some attachments"} failed to upload. Check your connection and try again.`,
           icon: "warning",
           actions: [
             { label: "Skip", value: false, primary: false },
@@ -1240,11 +1316,8 @@ async function createTicket(event) {
         });
 
         if (retry) {
-          if (photoFailed && photoFile && photoFile.size > 0) {
-            await uploadAttachment(realTicket.id, photoFile, "ticket-photos", "photo");
-          }
-          if (voiceFailed && voiceFile && voiceFile.size > 0) {
-            await uploadAttachment(realTicket.id, voiceFile, "ticket-voice-notes", "voice");
+          for (const upload of failed) {
+            await uploadAttachment(realTicket.id, upload.file, upload.bucket, upload.kind);
           }
           showToast("Attachments uploaded successfully.", "success");
         }
@@ -1290,15 +1363,22 @@ async function updateTicketDetails(event, ticketId) {
   if (!ticket) return;
 
   const data = new FormData(event.target);
+  const siteContactPhone = String(data.get("siteContactPhone") || "").trim();
   const values = {
     title: String(data.get("title") || "").trim(),
     priority: normalizePriority(data.get("priority")),
     location: String(data.get("location") || "").trim(),
+    siteContactPhone,
     callback: data.get("callback") === "on"
   };
 
   if (!values.title) {
     showToast("Ticket title is required.", "warning");
+    return;
+  }
+
+  if (siteContactPhone && !isValidPhone(siteContactPhone)) {
+    showToast("The site contact number doesn't look right — try 0771234567.", "warning");
     return;
   }
 
@@ -1310,6 +1390,7 @@ async function updateTicketDetails(event, ticketId) {
       title: values.title,
       priority: normalizePriority(values.priority).toLowerCase(),
       location_name: values.location,
+      site_contact_phone: siteContactPhone || null,
       wants_callback: values.callback
     });
 
@@ -1318,6 +1399,7 @@ async function updateTicketDetails(event, ticketId) {
     Object.assign(ticket, values);
     ticket.version += 1;
     saveState();
+    await loadTicketDetail(ticketId);
     showToast("Ticket updated.", "success");
   } catch (err) {
     showToast(friendlyError(err), "error");
@@ -1706,6 +1788,27 @@ async function loadRealAdminAlerts() {
   adminAlerts = data || [];
 }
 
+// A receipt is generated automatically in the database the instant a ticket
+// becomes Resolved — see 0005's on_ticket_resolved trigger. Nothing here
+// creates one; this only reads the record for the admin console.
+async function loadRealReceipts() {
+  if (!supabaseClient || userRole() !== "admin") return;
+
+  const { data, error } = await supabaseClient
+    .from("ticket_receipts")
+    .select("*")
+    .order("resolved_at", { ascending: false })
+    .limit(200);
+
+  if (error) {
+    console.error(error);
+    showToast(`Could not load receipts: ${friendlyError(error.message)}`, "error");
+    return;
+  }
+
+  state.receipts = data || [];
+}
+
 async function acknowledgeAlert(alertId) {
   if (!supabaseClient || !isUuid(alertId)) return;
 
@@ -1750,7 +1853,8 @@ async function loadRealSupportData(options = {}) {
     callbacks: loadCallbackQueue,
     approvals: loadRealApprovals,
     notifications: loadRealNotifications,
-    alerts: loadRealAdminAlerts
+    alerts: loadRealAdminAlerts,
+    receipts: loadRealReceipts
   };
 
   try {
@@ -2051,7 +2155,7 @@ function attachmentGallery(detail) {
   const attachments = detail?.attachments || [];
 
   if (!attachments.length) {
-    return `<p class="small muted">No photo or voice note was attached to this ticket.</p>`;
+    return `<p class="small muted">No photo, voice note or video was attached to this ticket.</p>`;
   }
 
   return `
@@ -2072,6 +2176,14 @@ function attachmentGallery(detail) {
             return `<div class="attachment attachment-voice">
                       <strong>🎙 Voice note</strong>
                       <audio controls preload="none" src="${escapeHtml(attachment.url)}"></audio>
+                      <span class="small muted">${name}${size}</span>
+                    </div>`;
+          }
+
+          if (attachment.file_type === "video") {
+            return `<div class="attachment attachment-video">
+                      <strong>🎬 Video clip</strong>
+                      <video controls preload="metadata" src="${escapeHtml(attachment.url)}"></video>
                       <span class="small muted">${name}${size}</span>
                     </div>`;
           }
@@ -2153,7 +2265,15 @@ function renderTicketDetail(ticket) {
   const role = userRole();
   const isStaff = ["agent", "technician", "admin"].includes(role);
   const canDeleteContent = role === "admin";
-  const canEdit = isStaff || (ticket.status === "new" && detail?.ticket?.created_by === currentProfile?.id);
+  // Mirrors the "Staff update tickets" RLS policy exactly: an agent or admin
+  // may edit any ticket, but a technician only one assigned to them — not
+  // every ticket in the queue. Showing the edit form more broadly than the
+  // database allows just produced a confusing "not permitted" error on save.
+  const canEditAsStaff =
+    role === "agent" ||
+    role === "admin" ||
+    (role === "technician" && ticket.assignedTechnicianId === currentProfile?.id);
+  const canEdit = canEditAsStaff || (ticket.status === "new" && detail?.ticket?.created_by === currentProfile?.id);
   const comments = ticketComments(ticket.id);
 
   const safeTicketId = escapeHtml(ticket.id);
@@ -2210,6 +2330,14 @@ function renderTicketDetail(ticket) {
               ${hasCoords ? `<span class="badge badge-ok">GPS</span>` : ""}
             </dd>
           </div>
+          ${
+            detail?.ticket?.site_contact_phone
+              ? `<div>
+                   <dt>Site contact</dt>
+                   <dd><a href="tel:${escapeHtml(detail.ticket.site_contact_phone.replace(/[^\d+]/g, ""))}">${escapeHtml(detail.ticket.site_contact_phone)}</a></dd>
+                 </div>`
+              : ""
+          }
         </dl>
 
         ${
@@ -2245,6 +2373,12 @@ function renderTicketDetail(ticket) {
             <div class="field">
               <label for="edit-location-${safeTicketId}">Location</label>
               <input id="edit-location-${safeTicketId}" name="location" value="${safeLocation}" maxlength="200" />
+            </div>
+            <div class="field">
+              <label for="edit-site-contact-${safeTicketId}">Site contact number</label>
+              <input id="edit-site-contact-${safeTicketId}" name="siteContactPhone" type="tel" maxlength="20"
+                     value="${escapeHtml(detail?.ticket?.site_contact_phone || "")}"
+                     placeholder="Who should the technician call on arrival?" />
             </div>
             <div class="action-row">
               <button class="primary-button" type="submit">Save changes</button>
@@ -2494,6 +2628,11 @@ function customerView() {
             </div>
             <input id="voice" name="voice" type="file" accept="audio/*" />
           </div>
+          <div class="field">
+            <label for="video">Video clip</label>
+            <input id="video" name="video" type="file" accept="video/mp4,video/webm,video/quicktime,video/3gpp" />
+            <span class="small muted">A short clip of the fault in action, up to 50 MB.</span>
+          </div>
           <div class="form-grid">
             <div class="field">
               <label for="priority">Priority</label>
@@ -2514,6 +2653,12 @@ function customerView() {
               <input type="hidden" name="lng" id="ticketLng" />
               <input type="hidden" name="accuracy" id="ticketAccuracy" />
             </div>
+          </div>
+          <div class="field">
+            <label for="siteContactPhone">Site contact number</label>
+            <input id="siteContactPhone" name="siteContactPhone" type="tel" maxlength="20"
+                   placeholder="Who should the technician call on arrival? 07X XXX XXXX" />
+            <span class="small muted">Only if it is not you — a security guard, receptionist, or whoever is at the site.</span>
           </div>
           <label class="field inline-check">
             <span>Need phone callback?</span>
@@ -2720,7 +2865,7 @@ function adminView() {
               <div>
                 <strong>${escapeHtml(notification.subject)}</strong>
                 <p class="small muted">${escapeHtml(notification.channel)} - attempts: ${notification.attempts}</p>
-                <span class="badge ${notification.status === "dead_letter" ? "badge-danger" : "badge-muted"}">${notification.status}</span>
+                <span class="badge ${notification.status === "dead_letter" ? "badge-danger" : "badge-muted"}">${escapeHtml(notification.status)}</span>
               </div>
               <button class="secondary-button compact-button" type="button" data-retry="${escapeHtml(notification.id)}">Retry</button>
             </div>
@@ -2773,6 +2918,35 @@ function adminView() {
           <span class="badge badge-muted">Migration ready</span>
         </div>
         <p class="muted">Use the script in scripts/import_inventory_csv.js to clean old spreadsheet data before loading it into Supabase.</p>
+      </article>
+
+      <article class="panel" style="grid-column: span 2;">
+        <div class="panel-title">
+          <h2>Resolution Receipts</h2>
+          <span class="badge badge-muted">${state.receipts.length} on file</span>
+        </div>
+        <p class="muted small">Generated automatically the moment a ticket is marked Resolved. Each one keeps its own record — deleting the ticket later does not remove its receipt.</p>
+        ${
+          state.receipts.length
+            ? state.receipts
+                .map(
+                  (receipt) => `
+            <div class="inventory-row">
+              <div>
+                <strong class="mono">${escapeHtml(receipt.receipt_number)}</strong>
+                <p class="small muted">
+                  ${escapeHtml(receipt.ticket_number)} · ${escapeHtml(receipt.customer_name || "—")}
+                  ${receipt.company_name ? ` · ${escapeHtml(receipt.company_name)}` : ""}
+                </p>
+                <span class="small muted">${escapeHtml(relativeTime(receipt.resolved_at))}</span>
+              </div>
+              <button class="secondary-button compact-button" type="button" data-view-receipt="${escapeHtml(receipt.id)}">View</button>
+            </div>
+          `
+                )
+                .join("")
+            : `<div class="empty-state">No tickets have been resolved yet.</div>`
+        }
       </article>
     </section>
   `;
@@ -2957,6 +3131,10 @@ function bindEvents() {
 
   document.querySelectorAll("[data-ack-alert]").forEach((button) => {
     button.onclick = () => acknowledgeAlert(button.dataset.ackAlert);
+  });
+
+  document.querySelectorAll("[data-view-receipt]").forEach((button) => {
+    button.onclick = () => openReceiptModal(button.dataset.viewReceipt);
   });
 
   document.querySelectorAll("[data-assign-technician]").forEach((button) => {

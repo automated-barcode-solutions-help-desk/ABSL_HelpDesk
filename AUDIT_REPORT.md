@@ -29,7 +29,7 @@ All of it has been fixed. The security defects are closed, the migration is
 corrected, the missing workflows are built, and the codebase now has an
 automated test suite, security headers, an error boundary and a launch runbook.
 
-**Assessment: ready for a staged production launch** once the eight steps in
+**Assessment: ready for a staged production launch** once the nine steps in
 [LAUNCH_CHECKLIST.md](LAUNCH_CHECKLIST.md) are complete. A one-week pilot with
 one customer company plus the ABSL technicians is recommended before general
 release — not because of any known defect, but because no real user has used
@@ -262,17 +262,125 @@ use, but hiding them is a courtesy, not the control.
 
 | Risk | Likelihood | Impact | Mitigation |
 |---|---|---|---|
+| **Supabase project is on the Free plan** | **Certain** | **High — see below** | **Upgrade to Pro ($25/mo) before general launch** |
+| **Resend free plan caps at 100 emails/day** | **High — see below** | **High — see below** | **Upgrade to Resend Pro ($20/mo) before general launch** |
 | Email domain not verified in Resend | Medium | High — no notifications reach anyone | Step 5 of the runbook; verify before launch |
 | Leaked passwords not rotated | Medium | Critical | Step 2 of the runbook; only ABSL can do it |
 | A regression ships unnoticed | Medium | Medium | 25 automated tests plus the manual pass in step 6 |
 | Load beyond a few dozen concurrent users | Low | Medium | Paginated and coalesced; not yet load tested |
 | Failure with no operator visibility | Medium | Medium | Users see errors; add a monitoring service in Phase 2 |
-| Backup never restored in a drill | Low | High | Schedule a restore test in the first month |
+| Backup never restored in a drill | Low | High | Free plan has no automatic backups at all; Pro adds daily backups, 7-day retention |
 | `xlsx` library has known advisories | Low | Low | Development-only, run on ABSL's own files, never in the web app |
+
+### 6.1 The Free-plan risk in full
+
+The database is currently on Supabase's Free tier. Three of its limits are not
+theoretical — they are things this specific product will hit in ordinary use:
+
+- **The project auto-pauses after 7 days with no API activity.** A quiet
+  weekend or a slow week is enough. Every part of the app — customer,
+  technician, admin — goes fully offline until someone opens the Supabase
+  dashboard and resumes it by hand. The notification worker's 5-minute
+  schedule happens to count as activity and staves this off today, but that
+  is a side effect of a cron job, not a guarantee — if that job is ever
+  paused, misconfigured, or fails silently, the auto-pause risk returns
+  without anyone noticing until a customer reports the site is down.
+- **1 GB of file storage, total.** Ticket photos run 2–8 MB each; a few dozen
+  active tickets exhaust it within weeks. Once full, every new photo and
+  voice-note upload fails.
+- **No automatic backups of any kind.** If the database is ever corrupted or
+  data is deleted by mistake, there is nothing to restore from. This is the
+  real reason the "backup restore drill" risk above cannot even be tested
+  yet — there is no backup to drill against.
+
+**Recommendation:** upgrade to Supabase Pro ($25/month) before opening the
+platform to real customers. This is a cost decision for the CEO to approve,
+not a code change — Project Settings → Billing → Upgrade to Pro.
+
+### 6.2 The Resend free-plan risk in full
+
+Two separate email paths now run through one Resend account: Supabase Auth's
+SMTP relay (verification, password reset) and the ticket notification worker
+(created, assigned, replied, status changed, dead-letter alerts). Both draw
+from the same quota.
+
+Resend's free plan allows **100 emails per day** (3,000/month, but the daily
+figure is the binding limit since ticket activity concentrates on business
+days, not spread evenly across a month). A single ticket's ordinary life
+cycle — created, assigned, two replies, resolved, closed — generates roughly
+six emails. At 15–20 tickets a day across all customers, that is 90–120
+emails, already at or past the free-plan ceiling on an ordinary day.
+
+The failure mode is not quiet: when Resend returns 429, the worker's retry
+logic treats it as an ordinary send failure and escalates to `dead_letter`
+after five attempts, firing a critical admin alert for each one. A busy day
+would present as a flood of alerts that reads like an outage, at exactly the
+moment the platform is being used the most.
+
+**Recommendation:** upgrade to Resend Pro ($20/month) before general launch —
+removes the daily cap. Combined with the Supabase upgrade above, total
+infrastructure cost is approximately **$45/month**, worth presenting to the
+CEO as one figure rather than two separate line items discovered later.
 
 ---
 
-## 7. Recommendations for Phase 2
+## 7. Second-pass audit — every file, read in full
+
+The findings above covered the state of the platform at the first review. A
+great deal of code has been added since — migrations 0002 through 0006,
+video attachments, resolution receipts, site contact numbers, portal
+separation — none of which had been checked line by line as a whole. This
+section is that check: all six migrations, `app.js`, `helpers.js`, the
+notification worker, every HTML page and the stylesheet, read start to
+finish and cross-referenced against each other, not sampled.
+
+Two real defects were found. Both were silent — neither raised an error or
+showed a broken screen, they simply did something other than what the code
+around them claimed.
+
+**7.1 — Customer replies never reached staff.** The trigger that emails
+someone when a comment is added routed a customer's reply to
+`tickets.assigned_agent_id` — a column that has never been written to
+anywhere in this application, by any button, form, or function. Every
+"customer replied" notification generated by this trigger evaluated a
+recipient of `NULL` and quietly did nothing, since the day it was written.
+Staff only learned of a reply if they happened to be watching the live
+dashboard at that moment; anyone not looking right then was never told.
+**Fixed:** replies now route to the assigned technician, the one column
+that genuinely tracks who is on the job.
+
+**7.2 — Any technician could reassign any ticket.** `reassign_ticket()`
+checked only that the caller was staff — agent, technician, or admin —
+with no check on whether the calling technician had anything to do with
+the ticket in question. In practice, any approved technician account could
+reach into a colleague's active job and hand it to someone else, with
+neither the colleague nor an agent involved. **Fixed:** a technician may
+now claim an unassigned job or hand off one currently assigned to them;
+touching a job assigned to someone else requires an agent or admin, exactly
+as the feature was described when it was built.
+
+Both fixes are in `supabase/migrations/0006_audit_fixes.sql` — run it after
+0005, same as every migration before it.
+
+Four smaller issues were found and fixed directly in the same pass, all in
+`app.js`:
+
+| Issue | Effect | Fix |
+|---|---|---|
+| A conflict-resolution dialog built its message with `<strong>` tags | The modal system escapes its body as plain text; the literal characters `<strong>` showed on screen instead of bold text | Message rewritten as plain text |
+| The technician "Work" button showed two success toasts | Both the low-level save function and its caller displayed a success message | Redundant one removed |
+| The "Edit ticket details" form displayed for any technician, on any ticket | Saving failed with a generic "not permitted" message for a ticket not assigned to them — correct at the database, confusing on screen | Form now only offers itself when the database would actually accept the save |
+| A notification's status was interpolated without escaping | Not exploitable — the column is a fixed four-value database enum, never free text — but inconsistent with escaping discipline everywhere else | Escaped for consistency |
+
+Nothing else in the two defects above, or in the four smaller ones, affects
+data that was already sent: no ticket, comment, or notification record was
+corrupted. The first defect only ever meant a notification silently wasn't
+queued; the second was a permission gap between staff, not a customer-facing
+one. Verified with `npm test` (30/30) and `npm run build` after every change.
+
+---
+
+## 8. Recommendations for Phase 2
 
 In the order they would pay off:
 
@@ -291,7 +399,7 @@ In the order they would pay off:
 
 ---
 
-## 8. Verdict
+## 9. Verdict
 
 The platform is secure, complete against its Phase 1 specification, and ready
 for a staged launch once the runbook is executed. The engineering judgement in

@@ -19,6 +19,11 @@ const UPLOAD_LIMITS = {
     maxBytes: 8 * 1024 * 1024,
     types: ["audio/webm", "audio/ogg", "audio/mpeg", "audio/mp4", "audio/wav", "audio/x-m4a", "audio/aac"],
     label: "voice note"
+  },
+  video: {
+    maxBytes: 50 * 1024 * 1024,
+    types: ["video/mp4", "video/webm", "video/quicktime", "video/x-m4v", "video/3gpp"],
+    label: "video clip"
   }
 };
 
