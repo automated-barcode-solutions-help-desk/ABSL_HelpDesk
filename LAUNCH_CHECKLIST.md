@@ -126,8 +126,9 @@ Authentication → URL Configuration:
 
 Database → Replication: enable for `tickets`, `ticket_comments`, `admin_alerts`
 
-Storage: `ticket-photos`, `ticket-voice-notes`, `inventory-csv-imports` must
-all show **Private**. Migration 0003 sets this; confirm in the UI.
+Storage: `ticket-photos`, `ticket-voice-notes`, `ticket-videos`,
+`inventory-csv-imports` must all show **Private**. Migrations 0003 and 0005
+set this; confirm in the UI.
 
 **Custom SMTP — do not skip this.** Supabase's built-in mailer (used for
 signup verification and password reset) is rate-limited hard and explicitly

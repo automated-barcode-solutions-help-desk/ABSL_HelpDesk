@@ -1330,10 +1330,17 @@ async function createTicket(event) {
         });
 
         if (retry) {
+          const stillFailed = [];
           for (const upload of failed) {
-            await uploadAttachment(realTicket.id, upload.file, upload.bucket, upload.kind);
+            const path = await uploadAttachment(realTicket.id, upload.file, upload.bucket, upload.kind);
+            if (!path) stillFailed.push(upload);
           }
-          showToast("Attachments uploaded successfully.", "success");
+          // uploadAttachment() already toasts its own error per file on
+          // failure — only claim success here if the retry actually cleared
+          // every failure, instead of announcing it unconditionally.
+          if (!stillFailed.length) {
+            showToast("Attachments uploaded successfully.", "success");
+          }
         }
       }
 
