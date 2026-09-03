@@ -528,9 +528,21 @@ function currentCompany() {
 // filename in the first place.
 const extraAuthedRoutes = ["tickets", "reset-password"];
 
+// Full-list pages behind the four admin dashboard panels that used to
+// render every row in place (User Approvals, Notifications, Admin System
+// Alerts, Resolution Receipts). Unlike extraAuthedRoutes, these need more
+// than "someone is signed in" - the data behind them is admin-only, so
+// canAccessRoute() checks the role, not just Boolean(currentUser).
+const adminOnlyExtraRoutes = ["approvals", "notifications", "system-alerts", "receipts"];
+
 function currentRoute() {
   const pageName = window.location.pathname.split("/").pop().replace(".html", "");
-  if (publicRoutes.includes(pageName) || dashboardRoutes.includes(pageName) || extraAuthedRoutes.includes(pageName)) {
+  if (
+    publicRoutes.includes(pageName) ||
+    dashboardRoutes.includes(pageName) ||
+    extraAuthedRoutes.includes(pageName) ||
+    adminOnlyExtraRoutes.includes(pageName)
+  ) {
     return pageName;
   }
 
@@ -556,6 +568,7 @@ function allowedDashboardRoutes() {
 function canAccessRoute(route) {
   if (publicRoutes.includes(route)) return true;
   if (extraAuthedRoutes.includes(route)) return Boolean(currentUser);
+  if (adminOnlyExtraRoutes.includes(route)) return Boolean(currentUser) && userRole() === "admin";
   if (!dashboardRoutes.includes(route) || !currentUser) return false;
   return allowedDashboardRoutes().includes(route);
 }
@@ -575,7 +588,12 @@ function routeLabel(route) {
     customer: portals.customer.name,
     agent: portals.agent.name,
     technician: portals.technician.name,
-    admin: portals.admin.name
+    admin: portals.admin.name,
+    tickets: "My Tickets",
+    approvals: "User Approvals",
+    notifications: "Notifications",
+    "system-alerts": "Admin System Alerts",
+    receipts: "Resolution Receipts"
   };
   return labels[route] || "Page";
 }
@@ -3067,6 +3085,153 @@ function technicianView() {
   `;
 }
 
+// Same shape as the ticket list's compact preview: a handful of cards next
+// to whatever else shares the dashboard, with a "See all" link to a
+// dedicated page instead of every row (which is how these four admin
+// panels used to render - fine with a handful of rows, unusable once real
+// usage piles up months of approvals, notifications, alerts or receipts
+// into one endless scrolling card next to three short ones).
+const ADMIN_LIST_PREVIEW_COUNT = 5;
+
+function adminListPreview(items, rowRenderer, seeAllHref, seeAllNoun, emptyMessage) {
+  if (!items.length) return `<div class="empty-state">${emptyMessage}</div>`;
+
+  const visible = items.slice(0, ADMIN_LIST_PREVIEW_COUNT);
+  const rows = visible.map(rowRenderer).join("");
+  const more =
+    items.length > ADMIN_LIST_PREVIEW_COUNT
+      ? `<div class="ticket-list-more">
+           <a class="secondary-button" href="${seeAllHref}">See all ${items.length} ${seeAllNoun}</a>
+         </div>`
+      : "";
+
+  return rows + more;
+}
+
+// One row renderer per list, shared between the compact dashboard preview
+// and that list's full page - the two used to duplicate this markup for
+// ticket cards too, which is exactly how they quietly drifted apart.
+function approvalRowHtml(approval) {
+  return `
+    <div class="inventory-row">
+      <div>
+        <strong>${escapeHtml(approval.name)}</strong>
+        <p class="small muted">${escapeHtml(approval.email)} - ${escapeHtml(approval.company)}</p>
+        <span class="badge ${approval.status === "approved" ? "badge-ok" : "badge-muted"}">${escapeHtml(approval.status)}</span>
+        <span class="badge ${approval.requestedRole === "technician" ? "badge-danger" : "badge-muted"}">requests: ${escapeHtml(approval.requestedRole)}</span>
+      </div>
+      <div class="action-row">
+        ${
+          approval.status === "pending"
+            ? `<button class="primary-button compact-button" type="button" data-approve="${escapeHtml(approval.id)}">Approve as ${escapeHtml(approval.requestedRole)}</button>
+               <button class="danger-button compact-button" type="button" data-reject="${escapeHtml(approval.id)}">Reject</button>`
+            : `<span class="small muted">Reviewed</span>`
+        }
+      </div>
+    </div>
+  `;
+}
+
+function notificationRowHtml(notification) {
+  return `
+    <div class="inventory-row">
+      <div>
+        <strong>${escapeHtml(notification.subject)}</strong>
+        <p class="small muted">${escapeHtml(notification.channel)} - attempts: ${notification.attempts}</p>
+        <span class="badge ${notification.status === "dead_letter" ? "badge-danger" : "badge-muted"}">${escapeHtml(notification.status)}</span>
+      </div>
+      <button class="secondary-button compact-button" type="button" data-retry="${escapeHtml(notification.id)}">Retry</button>
+    </div>
+  `;
+}
+
+function alertRowHtml(alert) {
+  return `
+    <div class="alert-card">
+      <div class="alert-severity alert-severity-${escapeHtml(alert.severity)}"></div>
+      <div>
+        <strong>${escapeHtml(alert.title)}</strong>
+        <p class="small muted">${escapeHtml(alert.body)}</p>
+        <span class="small muted">${new Date(alert.created_at).toLocaleString()}</span>
+      </div>
+      <div>
+        ${
+          !alert.acknowledged
+            ? `<button class="primary-button compact-button" type="button" data-ack-alert="${escapeHtml(alert.id)}">Acknowledge</button>`
+            : `<span class="badge badge-muted">Acknowledged</span>`
+        }
+      </div>
+    </div>
+  `;
+}
+
+function receiptRowHtml(receipt) {
+  return `
+    <div class="inventory-row">
+      <div>
+        <strong class="mono">${escapeHtml(receipt.receipt_number)}</strong>
+        <p class="small muted">
+          ${escapeHtml(receipt.ticket_number)} · ${escapeHtml(receipt.customer_name || "—")}
+          ${receipt.company_name ? ` · ${escapeHtml(receipt.company_name)}` : ""}
+        </p>
+        <span class="small muted">${escapeHtml(relativeTime(receipt.resolved_at))}</span>
+      </div>
+      <button class="secondary-button compact-button" type="button" data-view-receipt="${escapeHtml(receipt.id)}">View</button>
+    </div>
+  `;
+}
+
+// route -> { title, badge, items, rowRenderer, emptyMessage } for the four
+// "See all" pages above. One generic page renderer and one generic route
+// branch in render() use this instead of four near-identical copies.
+function adminListRoutes() {
+  return {
+    approvals: {
+      title: "User Approvals",
+      items: state.approvals,
+      rowRenderer: approvalRowHtml,
+      emptyMessage: "No approval requests are waiting."
+    },
+    notifications: {
+      title: "Notifications",
+      items: state.notifications,
+      rowRenderer: notificationRowHtml,
+      emptyMessage: "No notifications are queued."
+    },
+    "system-alerts": {
+      title: "Admin System Alerts",
+      items: adminAlerts,
+      rowRenderer: alertRowHtml,
+      emptyMessage: "No critical system events logged."
+    },
+    receipts: {
+      title: "Resolution Receipts",
+      items: state.receipts,
+      rowRenderer: receiptRowHtml,
+      emptyMessage: "No tickets have been resolved yet."
+    }
+  };
+}
+
+function adminListPage(route) {
+  const list = adminListRoutes()[route];
+  if (!list) return `<div class="panel"><div class="empty-state">Page not found.</div></div>`;
+
+  return `
+    <div class="panel">
+      <div class="panel-title">
+        <h2>${escapeHtml(list.title)}</h2>
+        <a class="secondary-button" href="admin.html">Back</a>
+      </div>
+      ${
+        list.items.length
+          ? list.items.map(list.rowRenderer).join("")
+          : `<div class="empty-state">${list.emptyMessage}</div>`
+      }
+    </div>
+  `;
+}
+
 function adminView() {
   const company = currentCompany();
 
@@ -3079,32 +3244,13 @@ function adminView() {
           <h2>User Approvals</h2>
           <span class="badge badge-muted">Personal email review</span>
         </div>
-        ${
-          state.approvals.length
-            ? state.approvals
-                .map(
-                  (approval) => `
-            <div class="inventory-row">
-              <div>
-                <strong>${escapeHtml(approval.name)}</strong>
-                <p class="small muted">${escapeHtml(approval.email)} - ${escapeHtml(approval.company)}</p>
-                <span class="badge ${approval.status === "approved" ? "badge-ok" : "badge-muted"}">${escapeHtml(approval.status)}</span>
-                <span class="badge ${approval.requestedRole === "technician" ? "badge-danger" : "badge-muted"}">requests: ${escapeHtml(approval.requestedRole)}</span>
-              </div>
-              <div class="action-row">
-                ${
-                  approval.status === "pending"
-                    ? `<button class="primary-button compact-button" type="button" data-approve="${escapeHtml(approval.id)}">Approve as ${escapeHtml(approval.requestedRole)}</button>
-                       <button class="danger-button compact-button" type="button" data-reject="${escapeHtml(approval.id)}">Reject</button>`
-                    : `<span class="small muted">Reviewed</span>`
-                }
-              </div>
-            </div>
-          `
-                )
-                .join("")
-            : `<div class="empty-state">No approval requests are waiting.</div>`
-        }
+        ${adminListPreview(
+          state.approvals,
+          approvalRowHtml,
+          "approvals.html",
+          "requests",
+          "No approval requests are waiting."
+        )}
       </article>
 
       <article class="panel">
@@ -3140,24 +3286,13 @@ function adminView() {
 
       <article class="panel">
         <h2>Notifications</h2>
-        ${
-          state.notifications.length
-            ? state.notifications
-                .map(
-                  (notification) => `
-            <div class="inventory-row">
-              <div>
-                <strong>${escapeHtml(notification.subject)}</strong>
-                <p class="small muted">${escapeHtml(notification.channel)} - attempts: ${notification.attempts}</p>
-                <span class="badge ${notification.status === "dead_letter" ? "badge-danger" : "badge-muted"}">${escapeHtml(notification.status)}</span>
-              </div>
-              <button class="secondary-button compact-button" type="button" data-retry="${escapeHtml(notification.id)}">Retry</button>
-            </div>
-          `
-                )
-                .join("")
-            : `<div class="empty-state">No notifications are queued.</div>`
-        }
+        ${adminListPreview(
+          state.notifications,
+          notificationRowHtml,
+          "notifications.html",
+          "notifications",
+          "No notifications are queued."
+        )}
       </article>
     </section>
     
@@ -3169,31 +3304,13 @@ function adminView() {
           <h2>Admin System Alerts</h2>
           <span class="badge badge-danger">Dead-letter Escalate</span>
         </div>
-        ${
-          adminAlerts.length
-            ? adminAlerts
-                .map(
-                  (alert) => `
-            <div class="alert-card">
-              <div class="alert-severity alert-severity-${escapeHtml(alert.severity)}"></div>
-              <div>
-                <strong>${escapeHtml(alert.title)}</strong>
-                <p class="small muted">${escapeHtml(alert.body)}</p>
-                <span class="small muted">${new Date(alert.created_at).toLocaleString()}</span>
-              </div>
-              <div>
-                ${
-                  !alert.acknowledged
-                    ? `<button class="primary-button compact-button" type="button" data-ack-alert="${escapeHtml(alert.id)}">Acknowledge</button>`
-                    : `<span class="badge badge-muted">Acknowledged</span>`
-                }
-              </div>
-            </div>
-          `
-                )
-                .join("")
-            : `<div class="empty-state">No critical system events logged.</div>`
-        }
+        ${adminListPreview(
+          adminAlerts,
+          alertRowHtml,
+          "system-alerts.html",
+          "alerts",
+          "No critical system events logged."
+        )}
       </article>
 
       <article class="panel">
@@ -3210,27 +3327,13 @@ function adminView() {
           <span class="badge badge-muted">${state.receipts.length} on file</span>
         </div>
         <p class="muted small">Generated automatically the moment a ticket is marked Resolved. Each one keeps its own record — deleting the ticket later does not remove its receipt.</p>
-        ${
-          state.receipts.length
-            ? state.receipts
-                .map(
-                  (receipt) => `
-            <div class="inventory-row">
-              <div>
-                <strong class="mono">${escapeHtml(receipt.receipt_number)}</strong>
-                <p class="small muted">
-                  ${escapeHtml(receipt.ticket_number)} · ${escapeHtml(receipt.customer_name || "—")}
-                  ${receipt.company_name ? ` · ${escapeHtml(receipt.company_name)}` : ""}
-                </p>
-                <span class="small muted">${escapeHtml(relativeTime(receipt.resolved_at))}</span>
-              </div>
-              <button class="secondary-button compact-button" type="button" data-view-receipt="${escapeHtml(receipt.id)}">View</button>
-            </div>
-          `
-                )
-                .join("")
-            : `<div class="empty-state">No tickets have been resolved yet.</div>`
-        }
+        ${adminListPreview(
+          state.receipts,
+          receiptRowHtml,
+          "receipts.html",
+          "receipts",
+          "No tickets have been resolved yet."
+        )}
       </article>
     </section>
   `;
@@ -3321,6 +3424,30 @@ function render() {
     // state.role stays whatever it already was rather than being set here.
     document.body.dataset.portal = portals[dashboardRouteForRole()]?.accent || "customer";
     app.innerHTML = pageHeading("My Tickets", "Every ticket you can see, searchable and fully paginated.") + ticketsPage();
+    bindEvents();
+    return;
+  }
+
+  if (adminOnlyExtraRoutes.includes(route)) {
+    if (!currentUser) {
+      app.innerHTML = loginPage(`Please login before opening ${routeLabel(route)}.`);
+      bindEvents();
+      return;
+    }
+
+    if (currentProfile?.approval_status && currentProfile.approval_status !== "approved") {
+      app.innerHTML = pendingApprovalPage();
+      bindEvents();
+      return;
+    }
+
+    if (!canAccessRoute(route)) {
+      navigateTo(dashboardRouteForRole());
+      return;
+    }
+
+    document.body.dataset.portal = "admin";
+    app.innerHTML = pageHeading(routeLabel(route), "Full list.") + adminListPage(route);
     bindEvents();
     return;
   }
