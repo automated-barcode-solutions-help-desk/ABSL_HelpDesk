@@ -20,10 +20,15 @@ SELECT
   (SELECT count(*) FROM pg_proc     WHERE proname = 'ticket_detail')              AS m0004_detail_rpc,
   (SELECT count(*) FROM information_schema.tables WHERE table_name = 'ticket_receipts') AS m0005_receipts_table,
   (SELECT count(*) FROM pg_proc     WHERE proname = 'generate_ticket_receipt')    AS m0005_receipt_trigger_fn,
-  (SELECT pg_get_functiondef('public.queue_comment_notification'::regproc) LIKE '%assigned_technician_id%') AS m0006_reply_notify_fixed;
--- Expect: policies 30+, every other column 1, and m0006_reply_notify_fixed = true.
--- That last one has no separate object to count — 0006 only CREATE OR REPLACEs
--- an existing function — so the live function's own source is the only proof.
+  (SELECT pg_get_functiondef('public.queue_comment_notification'::regproc) LIKE '%assigned_technician_id%') AS m0006_reply_notify_fixed,
+  (SELECT pg_get_functiondef('public.queue_comment_notification'::regproc) LIKE '%role IN (%agent%admin%') AS m0006_unassigned_reply_broadcast,
+  (SELECT pg_get_functiondef('public.reassign_ticket'::regproc) LIKE '%claim an unassigned job for yourself%') AS m0006_claim_only_for_self;
+-- Expect: policies 30+, every other column 1, and all three m0006_* columns = true.
+-- Those have no separate object to count — 0006 only CREATE OR REPLACEs
+-- existing functions — so the live functions' own source is the only proof.
+-- (The claim_only_for_self and unassigned_reply_broadcast checks require the
+-- amended 0006 from the follow-up review pass — re-run 0006 if either reads
+-- false on a database where 0006 was already applied once before.)
 -- Expect: policies 30+, and 1 in every other column.
 -- A 0 in an m0004_ column means 0004 has not applied.
 

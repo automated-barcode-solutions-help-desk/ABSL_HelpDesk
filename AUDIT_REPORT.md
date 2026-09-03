@@ -360,7 +360,8 @@ touching a job assigned to someone else requires an agent or admin, exactly
 as the feature was described when it was built.
 
 Both fixes are in `supabase/migrations/0006_audit_fixes.sql` — run it after
-0005, same as every migration before it.
+0005, same as every migration before it. (0006 was amended again in the
+third pass below, in place — re-run it if it was already applied once.)
 
 Four smaller issues were found and fixed directly in the same pass, all in
 `app.js`:
@@ -377,6 +378,34 @@ data that was already sent: no ticket, comment, or notification record was
 corrupted. The first defect only ever meant a notification silently wasn't
 queued; the second was a permission gap between staff, not a customer-facing
 one. Verified with `npm test` (30/30) and `npm run build` after every change.
+
+### 7.3 — Third pass: 9-angle automated review, plus a new page and a full responsive pass
+
+Two more rounds of work landed after §7.1–7.2: a dedicated `tickets.html`
+page (so a busy ticket list doesn't have to live entirely inside a dashboard
+panel) and a full responsive-design pass across all four portals (five real
+layout bugs found and fixed by measuring computed CSS at 320–1920px with
+realistic stress-test content, not by eyeballing screenshots). That work was
+then put through a 9-angle automated code review. Four more real, silent
+defects came out of it — two of them the exact same two root causes as
+§7.1–7.2, recurring in a new spot each:
+
+| Issue | Effect | Fix |
+|---|---|---|
+| The agent dashboard's "Ticket Queue" panel — an agent's primary work surface — was capped to a 5-card preview by the new compact-list logic meant for secondary dashboard panels | Searching or filtering a busy queue silently hid every result past the 5th, with no way to see the rest without losing the search on click-through | Agent's Ticket Queue now gets the full, paginated, searchable list, same as `tickets.html`; only genuinely secondary panels (customer's "My Tickets", technician's "My Jobs") stay compact |
+| The "Assign or hand over" control was still shown, fully enabled, to a technician viewing a colleague's ticket | `reassign_ticket()` (§7.2) rejects exactly that call — the technician saw a raw RPC error instead of the control simply not being offered | Control is now gated by the same rule the database enforces |
+| `reassign_ticket()` blocked a technician from touching a colleague's *active* job (§7.2), but not from handing an *unclaimed* job straight to a colleague without ever working it themselves | "Claim" didn't actually mean claim for yourself — a technician could still redirect an unassigned ticket to whichever colleague they chose | RPC now rejects assigning an unclaimed job to anyone but the caller; the UI's technician dropdown only offers "yourself" when claiming an unclaimed job |
+| A customer reply on a ticket with no technician assigned yet still notified nobody | §7.1 fixed replies once a technician exists; a reply on a still-unassigned ticket — arguably the most time-sensitive case, since nobody has looked at it yet — fell into the identical silent hole | Now broadcasts to every approved agent and admin instead of one recipient, since there's no single point of contact yet |
+
+One more duplicate-notification issue was found and fixed alongside these:
+assigning a technician inserted a hand-off comment (which the comment
+trigger already emails to the customer) *and* sent a second, separate
+"technician assigned" email for the same event. The explicit second email
+was removed; the comment trigger already covers it.
+
+All four fixes are in the same `supabase/migrations/0006_audit_fixes.sql`
+(amended in place, idempotent, safe to re-run) and `app.js`. Verified with
+`npm test` (30/30) and `npm run build` (17 files) after the changes.
 
 ---
 

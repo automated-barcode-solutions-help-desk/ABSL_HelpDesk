@@ -2059,11 +2059,14 @@ function ticketToolbar(total) {
 }
 
 // Same toolbar, two different lists behind it: a five-card preview wherever
-// it's embedded in a dashboard next to other panels, and the real paginated
-// list on its own page (tickets.html) where the list is the whole point of
-// the screen. currentRoute() is what tells them apart.
+// it's embedded next to other panels as a secondary dashboard convenience,
+// and the real, paginated, fully-searchable list everywhere the ticket
+// queue is the actual job being done on that screen — tickets.html, and
+// the agent dashboard's "Ticket Queue" panel, which is an agent's primary
+// work surface, not a preview of something else. Capping it at five cards
+// silently broke search for any query matching more than five tickets.
 function ticketListHostContent() {
-  return currentRoute() === "tickets"
+  return ["tickets", "agent"].includes(currentRoute())
     ? renderTicketList()
     : renderTicketListCompact(filterTickets(state.tickets, state.filters));
 }
@@ -2358,6 +2361,23 @@ function renderTicketDetail(ticket) {
     role === "admin" ||
     (role === "technician" && ticket.assignedTechnicianId === currentProfile?.id);
   const canEdit = canEditAsStaff || (ticket.status === "new" && detail?.ticket?.created_by === currentProfile?.id);
+  // Mirrors reassign_ticket()'s own permission check: a technician may only
+  // touch a job that is unclaimed or already theirs. The control used to be
+  // shown to every technician for every ticket, enabled, and only the RPC
+  // rejected it — a confusing "not permitted" error on click instead of the
+  // control simply not being offered.
+  const canReassign =
+    role === "agent" ||
+    role === "admin" ||
+    (role === "technician" &&
+      (!ticket.assignedTechnicianId || ticket.assignedTechnicianId === currentProfile?.id));
+  // A technician claiming an unclaimed job may only claim it for themselves
+  // — reassign_ticket() now rejects handing an unclaimed job to a colleague,
+  // so don't offer that colleague as an option in the first place.
+  const technicianOptions =
+    role === "technician" && !ticket.assignedTechnicianId
+      ? state.technicians.filter((technician) => technician.id === currentProfile?.id)
+      : state.technicians;
   const comments = ticketComments(ticket.id);
 
   const safeTicketId = escapeHtml(ticket.id);
@@ -2531,7 +2551,7 @@ function renderTicketDetail(ticket) {
         }
 
         ${
-          isStaff
+          canReassign
             ? `
         <hr />
         <h3>Technician</h3>
@@ -2539,7 +2559,7 @@ function renderTicketDetail(ticket) {
           <label for="technician-${safeTicketId}">Assign or hand over</label>
           <select id="technician-${safeTicketId}" data-technician-select="${safeTicketId}">
             <option value="">Unassigned</option>
-            ${state.technicians
+            ${technicianOptions
               .map(
                 (technician) => `
                   <option value="${escapeHtml(technician.id)}" ${
@@ -2554,9 +2574,9 @@ function renderTicketDetail(ticket) {
           <input id="handover-reason-${safeTicketId}" data-handover-reason="${safeTicketId}" maxlength="200" placeholder="e.g. fully booked today" />
         </div>
         <button class="primary-button" type="button" data-assign-technician="${safeTicketId}" ${
-                state.technicians.length ? "" : "disabled"
+                technicianOptions.length ? "" : "disabled"
               }>${selectedTechnicianId ? "Reassign" : "Assign"}</button>
-        ${state.technicians.length ? "" : `<p class="small muted">No approved technician accounts yet.</p>`}`
+        ${technicianOptions.length ? "" : `<p class="small muted">No approved technician accounts yet.</p>`}`
             : ""
         }
 
