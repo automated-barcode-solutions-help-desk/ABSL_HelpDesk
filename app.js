@@ -517,9 +517,15 @@ function currentCompany() {
   return state.company;
 }
 
+// "tickets" is a real page (tickets.html) but not one of the four role
+// portals — every signed-in role can reach it, none of them has a nav tab
+// for it. Kept separate from dashboardRoutes so nav-tab logic elsewhere
+// never has to special-case it.
+const extraAuthedRoutes = ["tickets"];
+
 function currentRoute() {
   const pageName = window.location.pathname.split("/").pop().replace(".html", "");
-  if (publicRoutes.includes(pageName) || dashboardRoutes.includes(pageName)) {
+  if (publicRoutes.includes(pageName) || dashboardRoutes.includes(pageName) || extraAuthedRoutes.includes(pageName)) {
     return pageName;
   }
 
@@ -544,6 +550,7 @@ function allowedDashboardRoutes() {
 
 function canAccessRoute(route) {
   if (publicRoutes.includes(route)) return true;
+  if (extraAuthedRoutes.includes(route)) return Boolean(currentUser);
   if (!dashboardRoutes.includes(route) || !currentUser) return false;
   return allowedDashboardRoutes().includes(route);
 }
@@ -788,6 +795,13 @@ async function openTicket(ticketId) {
   state.selectedTicketId = ticketId;
   saveState();
   render();
+
+  // The detail panel renders below the ticket list on the same page, not on
+  // a separate URL. Without this, pressing "Open" silently filled in a
+  // section the customer had to go hunting for — it looked like the button
+  // had done nothing. Scroll to it the moment the basic ticket info is on
+  // screen; don't wait for attachments/history to finish loading.
+  document.querySelector("#ticketDetail")?.scrollIntoView({ behavior: "smooth", block: "start" });
 
   await loadTicketDetail(ticketId);
   render();
@@ -2007,7 +2021,12 @@ function renderStats() {
     cards.push(`<article class="stat-card"><span class="muted">Unread alerts</span><strong>${adminAlerts.filter((alert) => !alert.acknowledged).length}</strong></article>`);
   }
 
-  return `<section class="dashboard-grid">${cards.join("")}</section>`;
+  // A fixed 3-column grid was fine for customer (1 card) and agent/technician
+  // (3 cards each), but admin has 4 — the 4th wrapped alone into row two with
+  // two empty column tracks beside it. Measured: 769px of dead space at
+  // desktop width. .stats-grid auto-fits to however many cards a role
+  // actually has, so this holds for any future count too.
+  return `<section class="dashboard-grid stats-grid">${cards.join("")}</section>`;
 }
 
 // Search and filters live outside the list host, so typing in the box does
@@ -2035,8 +2054,18 @@ function ticketToolbar(total) {
       </select>
       <span class="small muted">${total} ticket${total === 1 ? "" : "s"}</span>
     </div>
-    <div id="ticketListHost">${renderTicketList()}</div>
+    <div id="ticketListHost">${ticketListHostContent()}</div>
   `;
+}
+
+// Same toolbar, two different lists behind it: a five-card preview wherever
+// it's embedded in a dashboard next to other panels, and the real paginated
+// list on its own page (tickets.html) where the list is the whole point of
+// the screen. currentRoute() is what tells them apart.
+function ticketListHostContent() {
+  return currentRoute() === "tickets"
+    ? renderTicketList()
+    : renderTicketListCompact(filterTickets(state.tickets, state.filters));
 }
 
 function pagination(totalPages) {
@@ -2069,7 +2098,7 @@ function renderTicketListOnly() {
     return;
   }
 
-  host.innerHTML = renderTicketList();
+  host.innerHTML = ticketListHostContent();
   bindEvents();
 
   const search = document.querySelector("#ticketSearch");
@@ -2080,6 +2109,55 @@ function renderTicketListOnly() {
   }
 }
 
+// One card, shared by the full paginated list and the compact dashboard
+// preview — the two used to duplicate this markup, which is exactly how
+// they'd quietly drift apart over time.
+function ticketCardHtml(ticket, canDeleteTicket) {
+  const safeId = escapeHtml(ticket.id);
+  const safeTitle = escapeHtml(ticket.title);
+  const safeNumber = escapeHtml(ticket.number);
+  const safePriority = escapeHtml(normalizePriority(ticket.priority));
+  const safeCompany = escapeHtml(ticket.company || "Company");
+  const safeLocation = escapeHtml(ticket.location || "No location provided");
+
+  return `
+    <article class="ticket-card">
+      <div>
+        <h3>${safeTitle}</h3>
+        <div class="ticket-meta">
+          <span class="badge badge-muted">${safeNumber}</span>
+          ${statusBadge(ticket.status)}
+          <span class="badge ${safePriority === "High" ? "badge-danger" : "badge-muted"}">${safePriority}</span>
+          ${ticket.callback ? `<span class="badge badge-ok">☎ Callback</span>` : ""}
+          ${ticket.id === state.selectedTicketId ? `<span class="badge badge-ok">Open</span>` : ""}
+        </div>
+        <p class="small muted">
+          ${escapeHtml(ticket.customer || "")}${safeCompany ? ` · ${safeCompany}` : ""} · ${safeLocation}
+        </p>
+        <p class="small muted">${escapeHtml(relativeTime(ticket.createdAt))}</p>
+      </div>
+      <div class="ticket-card-actions">
+        <button class="secondary-button" type="button" data-open-ticket="${safeId}">Open</button>
+        ${
+          canDeleteTicket
+            ? `<button class="danger-button" type="button" data-delete-ticket="${safeId}">Delete</button>`
+            : ""
+        }
+      </div>
+    </article>
+  `;
+}
+
+function emptyTicketListMessage() {
+  const filtered =
+    state.filters.query || state.filters.status !== "all" || state.filters.priority !== "all";
+  return `<div class="empty-state">${
+    filtered
+      ? "No ticket matches that search. Clear the filters to see everything."
+      : "No tickets yet."
+  }</div>`;
+}
+
 function renderTicketList(tickets = null) {
   if (isDataLoading) {
     return `<div class="loading-spinner">Fetching ticket queue…</div>`;
@@ -2087,15 +2165,7 @@ function renderTicketList(tickets = null) {
 
   const source = tickets || filterTickets(state.tickets, state.filters);
 
-  if (!source.length) {
-    const filtered =
-      state.filters.query || state.filters.status !== "all" || state.filters.priority !== "all";
-    return `<div class="empty-state">${
-      filtered
-        ? "No ticket matches that search. Clear the filters to see everything."
-        : "No tickets yet."
-    }</div>`;
-  }
+  if (!source.length) return emptyTicketListMessage();
 
   const totalPages = Math.max(1, Math.ceil(source.length / TICKETS_PER_PAGE));
   const page = Math.min(Math.max(1, state.page), totalPages);
@@ -2109,45 +2179,59 @@ function renderTicketList(tickets = null) {
 
   return `
     <div class="ticket-list">
-      ${visible
-        .map((ticket) => {
-          const safeId = escapeHtml(ticket.id);
-          const safeTitle = escapeHtml(ticket.title);
-          const safeNumber = escapeHtml(ticket.number);
-          const safePriority = escapeHtml(normalizePriority(ticket.priority));
-          const safeCompany = escapeHtml(ticket.company || "Company");
-          const safeLocation = escapeHtml(ticket.location || "No location provided");
-
-          return `
-          <article class="ticket-card">
-            <div>
-              <h3>${safeTitle}</h3>
-              <div class="ticket-meta">
-                <span class="badge badge-muted">${safeNumber}</span>
-                ${statusBadge(ticket.status)}
-                <span class="badge ${safePriority === "High" ? "badge-danger" : "badge-muted"}">${safePriority}</span>
-                ${ticket.callback ? `<span class="badge badge-ok">☎ Callback</span>` : ""}
-                ${ticket.id === state.selectedTicketId ? `<span class="badge badge-ok">Open</span>` : ""}
-              </div>
-              <p class="small muted">
-                ${escapeHtml(ticket.customer || "")}${safeCompany ? ` · ${safeCompany}` : ""} · ${safeLocation}
-              </p>
-              <p class="small muted">${escapeHtml(relativeTime(ticket.createdAt))}</p>
-            </div>
-            <div class="ticket-card-actions">
-              <button class="secondary-button" type="button" data-open-ticket="${safeId}">Open</button>
-              ${
-                canDeleteTicket
-                  ? `<button class="danger-button" type="button" data-delete-ticket="${safeId}">Delete</button>`
-                  : ""
-              }
-            </div>
-          </article>
-        `;
-        })
-        .join("")}
+      ${visible.map((ticket) => ticketCardHtml(ticket, canDeleteTicket)).join("")}
     </div>
     ${tickets ? "" : pagination(totalPages)}
+  `;
+}
+
+// A dashboard panel is a preview, not the whole inbox — five cards and a
+// clear way to see the rest, rather than every ticket (or a full pager)
+// competing for space with the create-ticket form or the callback queue
+// next to it.
+const TICKETS_PREVIEW_COUNT = 5;
+
+function renderTicketListCompact(source) {
+  if (isDataLoading) {
+    return `<div class="loading-spinner">Fetching ticket queue…</div>`;
+  }
+
+  if (!source.length) return emptyTicketListMessage();
+
+  const canDeleteTicket = userRole() === "admin";
+  const visible = source.slice(0, TICKETS_PREVIEW_COUNT);
+
+  return `
+    <div class="ticket-list">
+      ${visible.map((ticket) => ticketCardHtml(ticket, canDeleteTicket)).join("")}
+    </div>
+    ${
+      source.length > TICKETS_PREVIEW_COUNT
+        ? `<div class="ticket-list-more">
+             <a class="secondary-button" href="tickets.html">See all ${source.length} tickets</a>
+           </div>`
+        : ""
+    }
+  `;
+}
+
+// The full, searchable, fully paginated list — what "See all" leads to.
+// Reuses the exact same toolbar and filter state as the compact preview,
+// so a search typed on the dashboard panel is still applied here.
+function ticketsPage() {
+  // Just one panel — no grid needed. A one-child .hero-grid would still
+  // reserve its unused minmax(300px, …) second column and leave the exact
+  // kind of dead space this whole pass has been closing elsewhere.
+  return `
+    <div class="panel">
+      <div class="panel-title">
+        <h2>All Tickets</h2>
+        <a class="secondary-button" href="${dashboardRouteForRole()}.html">Back</a>
+      </div>
+      ${ticketToolbar(filterTickets(state.tickets, state.filters).length)}
+    </div>
+    <br />
+    ${renderTicketDetail(selectedTicket())}
   `;
 }
 
@@ -2258,7 +2342,7 @@ function commentAuthorName(comment, detail) {
 
 function renderTicketDetail(ticket) {
   if (!ticket) {
-    return `<section class="panel"><div class="empty-state">Select a ticket to see the full history, photos and replies.</div></section>`;
+    return `<section class="panel" id="ticketDetail"><div class="empty-state">Select a ticket to see the full history, photos and replies.</div></section>`;
   }
 
   const detail = currentDetail();
@@ -2290,7 +2374,7 @@ function renderTicketDetail(ticket) {
   const selectedTechnicianId = ticket.assignedTechnicianId || "";
 
   return `
-    <section class="detail-grid">
+    <section class="detail-grid" id="ticketDetail">
       <article class="panel">
         <div class="panel-title">
           <div>
@@ -2751,7 +2835,7 @@ function technicianView() {
         </div>
         ${
           assigned.length
-            ? renderTicketList(assigned)
+            ? renderTicketListCompact(assigned)
             : `<div class="empty-state">No jobs assigned to you right now. An agent will assign work here.</div>`
         }
       </div>
@@ -2880,7 +2964,7 @@ function adminView() {
     <br />
     
     <section class="dashboard-grid">
-      <article class="panel" style="grid-column: span 2;">
+      <article class="panel panel-span-2">
         <div class="panel-title">
           <h2>Admin System Alerts</h2>
           <span class="badge badge-danger">Dead-letter Escalate</span>
@@ -2920,7 +3004,7 @@ function adminView() {
         <p class="muted">Use the script in scripts/import_inventory_csv.js to clean old spreadsheet data before loading it into Supabase.</p>
       </article>
 
-      <article class="panel" style="grid-column: span 2;">
+      <article class="panel panel-span-full">
         <div class="panel-title">
           <h2>Resolution Receipts</h2>
           <span class="badge badge-muted">${state.receipts.length} on file</span>
@@ -3005,6 +3089,28 @@ function render() {
 
   if (route === "register") {
     app.innerHTML = registerPage();
+    bindEvents();
+    return;
+  }
+
+  if (route === "tickets") {
+    if (!currentUser) {
+      app.innerHTML = loginPage("Please login before opening your tickets.");
+      bindEvents();
+      return;
+    }
+
+    if (currentProfile?.approval_status && currentProfile.approval_status !== "approved") {
+      app.innerHTML = pendingApprovalPage();
+      bindEvents();
+      return;
+    }
+
+    // Keep the signed-in role's own colour and identity — this is a detail
+    // page reached from inside a portal, not a portal of its own, so
+    // state.role stays whatever it already was rather than being set here.
+    document.body.dataset.portal = portals[dashboardRouteForRole()]?.accent || "customer";
+    app.innerHTML = pageHeading("My Tickets", "Every ticket you can see, searchable and fully paginated.") + ticketsPage();
     bindEvents();
     return;
   }

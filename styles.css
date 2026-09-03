@@ -173,19 +173,30 @@ a:focus-visible {
   gap: 10px;
 }
 
-/* --- Role Navigation --- */
+/* --- Role Navigation ---
+   A customer, agent or technician only ever has ONE visible link here —
+   allowedDashboardRoutes() returns just their own role; only admin gets
+   all four. A fixed 4-column (or 2-column, at narrower widths) grid held
+   that one link to a quarter or half width with dead empty track beside
+   it — measured at 45% width with a bare gap on a 700px screen, across
+   the whole 521-860px range. Flex-wrap sizes each link to the actual
+   count: one link fills the bar, two split it, four wrap sensibly. */
 .role-nav {
   position: sticky;
   top: 73px;
   z-index: 90;
-  display: grid;
-  grid-template-columns: repeat(4, 1fr);
+  display: flex;
+  flex-wrap: wrap;
   gap: 8px;
   padding: 10px clamp(12px, 4vw, 36px);
   background: rgba(240, 244, 255, 0.85);
   border-bottom: 1px solid var(--line);
   -webkit-backdrop-filter: var(--blur);
   backdrop-filter: var(--blur);
+}
+
+.role-nav a {
+  flex: 1 1 140px;
 }
 
 /* --- Shared Button Base --- */
@@ -459,6 +470,44 @@ button[disabled] {
 
 .dashboard-grid {
   grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+/* Stat cards vary by role — 1 for a customer, 3 for agent/technician, 4 for
+   admin. A fixed 3-column count left admin's 4th card alone in a second row
+   with two empty tracks beside it (measured: 769px of dead space at desktop
+   width). auto-fit sizes to however many cards there actually are, for any
+   count, without a per-role special case. Same specificity as .dashboard-grid
+   above — this must stay below it in the file to win. */
+.stats-grid {
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+}
+
+/* Wide panels inside .dashboard-grid. These used to be inline
+   style="grid-column: span N" on the element itself — which broke badly
+   the moment the grid's own column count changed under them: at the
+   860px breakpoint .dashboard-grid drops to a single explicit column, but
+   a child still asking to span 2 or 3 forced the browser to invent
+   implicit tracks and auto-size them from content. Measured result: three
+   tracks of 28px / 0px / 580px instead of one clean full-width column —
+   a heading wrapped down to one or two characters per line, crushed into
+   a 46px-wide sliver, while its neighbour ballooned into the space that
+   should not have existed. Two different, breakpoint-safe fixes: */
+
+/* span 2 is a real desktop-only design choice (this panel is meant to be
+   2/3 width, not full), so it needs an explicit reset back to a single
+   normal column at the same breakpoint that collapses the grid — see the
+   860px media query below, which is where that reset lives. */
+.panel-span-2 {
+  grid-column: span 2;
+}
+
+/* "Always full width" doesn't need a magic number or a breakpoint reset
+   at all: line -1 always means the grid's own last line, whatever the
+   current column count is. At 3 columns that is line 4 (spans all
+   three); collapsed to 1 column it is line 2 (spans the one there is).
+   Correct at every width by construction, nothing to keep in sync. */
+.panel-span-full {
+  grid-column: 1 / -1;
 }
 
 .detail-grid {
@@ -756,35 +805,6 @@ th {
   width: auto;
   min-height: auto;
   accent-color: var(--teal);
-}
-
-/* --- Tables --- */
-.table-wrap {
-  max-width: 100%;
-  overflow-x: auto;
-  border: 1px solid var(--line);
-  border-radius: var(--radius);
-}
-
-table {
-  width: 100%;
-  border-collapse: collapse;
-  min-width: 640px;
-}
-
-th,
-td {
-  padding: 12px 14px;
-  text-align: left;
-  border-bottom: 1px solid var(--line);
-}
-
-th {
-  font-size: 11px;
-  font-weight: 700;
-  color: var(--muted);
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
 }
 
 /* --- Timeline --- */
@@ -1162,7 +1182,6 @@ th {
 
   .role-nav {
     top: 126px;
-    grid-template-columns: repeat(2, 1fr);
   }
 
   .hero-grid,
@@ -1170,6 +1189,21 @@ th {
   .detail-grid,
   .form-grid {
     grid-template-columns: 1fr;
+  }
+
+  /* Same specificity as .dashboard-grid's 1fr above, later in the
+     cascade — wins back auto-fit sizing for stat cards specifically, so a
+     tablet gets a sensible 2-up layout instead of 4 cards stacked full-width. */
+  .stats-grid {
+    grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  }
+
+  /* .dashboard-grid just dropped to a single explicit column above. Without
+     this, .panel-span-2 still asks to span 2 columns that no longer exist,
+     and the browser invents a phantom implicit one sized from content —
+     this exact reset is what closes the 28px/0px/580px bug. */
+  .panel-span-2 {
+    grid-column: auto;
   }
 
   .ticket-card {
@@ -1194,7 +1228,6 @@ th {
 
   .role-nav {
     position: static;
-    grid-template-columns: 1fr 1fr;
     padding: 8px;
   }
 
@@ -1272,10 +1305,6 @@ th {
 }
 
 @media (max-width: 380px) {
-  .role-nav {
-    grid-template-columns: 1fr;
-  }
-
   .role-nav a,
   .primary-button,
   .secondary-button,
@@ -1316,12 +1345,22 @@ body[data-portal] .topbar .eyebrow {
   align-items: center;
   gap: 10px;
   align-self: flex-start;
+  max-width: 100%;
   padding: 8px 14px;
   border: 1px solid var(--line-solid);
   border-radius: var(--radius-pill);
   background: var(--paper-solid);
   box-shadow: var(--shadow-sm);
-  white-space: nowrap;
+}
+
+/* A real name can run long — measured overflow on a 320px phone with a
+   four-word Sri Lankan name, because nowrap here refused to let it break
+   and forced the whole page 146px wider than the viewport. min-width:0 is
+   required alongside overflow-wrap on a flex item — without it the item's
+   default auto min-width holds it to its unwrapped content width. */
+.portal-identity strong {
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 .badge-role {
@@ -1572,6 +1611,17 @@ body[data-portal] .topbar .eyebrow {
   justify-content: center;
   margin-top: 16px;
   flex-wrap: wrap;
+}
+
+/* The escape hatch below a 5-card dashboard preview, to the real list. */
+.ticket-list-more {
+  display: flex;
+  justify-content: center;
+  margin-top: 14px;
+}
+
+.ticket-list-more a {
+  width: min(100%, 320px);
 }
 
 /* --- Recorder / GPS row --- */

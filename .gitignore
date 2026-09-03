@@ -13,3 +13,8 @@ supabase/.temp/
 # config.js holds the live project URL and publishable key. It is safe to
 # expose in a browser, but keep deployment-specific copies out of git.
 config.local.js
+
+# Isolated git worktrees the Agent tool creates for background subagents
+# (e.g. code-review's isolation:"worktree" mode) — full repo copies used for
+# one review pass, never project content.
+.claude/
