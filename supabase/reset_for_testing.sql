@@ -3,10 +3,12 @@
 --
 --   !!  DESTRUCTIVE AND IRREVERSIBLE  !!
 --
--- Deletes EVERY account, ticket, comment, attachment record, notification
--- and audit record in this project. It keeps the schema, the companies, the
--- verified domains and the inventory catalogue, and resets stock and ticket
--- numbering to a clean state.
+-- Deletes EVERY account, ticket, comment, attachment record, resolution
+-- receipt, notification and audit record in this project. It keeps the
+-- schema, the companies, the verified domains and the inventory catalogue,
+-- and resets stock, ticket numbering and receipt numbering to a clean
+-- state — this is the "go live with a brand-new database" reset as much as
+-- it is a test-data reset; the two are the same operation.
 --
 -- Uploaded FILES are not removed: Supabase blocks deleting them from SQL.
 -- Empty the buckets from the dashboard — see the note at the end.
@@ -32,7 +34,7 @@ BEGIN
   SELECT count(*) INTO v_users   FROM auth.users;
   SELECT count(*) INTO v_tickets FROM public.tickets;
   SELECT count(*) INTO v_files   FROM storage.objects
-    WHERE bucket_id IN ('ticket-photos', 'ticket-voice-notes', 'inventory-csv-imports');
+    WHERE bucket_id IN ('ticket-photos', 'ticket-voice-notes', 'ticket-videos', 'inventory-csv-imports');
 
   IF NOT v_i_am_sure THEN
     RAISE EXCEPTION
@@ -53,6 +55,10 @@ BEGIN
   DELETE FROM public.ticket_status_history;
   DELETE FROM public.ticket_comments;
   DELETE FROM public.ticket_attachments;
+  -- ticket_receipts.ticket_id is ON DELETE SET NULL (a receipt is meant to
+  -- outlive the ticket it came from), so deleting tickets first would leave
+  -- every old receipt behind, orphaned but intact. Explicit for a full reset.
+  DELETE FROM public.ticket_receipts;
   DELETE FROM public.tickets;
   DELETE FROM public.approval_requests;
   DELETE FROM public.profiles;
@@ -60,8 +66,9 @@ BEGIN
   -- Removing the auth user cascades to anything keyed on it.
   DELETE FROM auth.users;
 
-  -- Start ticket numbering from ABSL-YYYY-000001 again.
+  -- Start ticket and receipt numbering from 1 again.
   ALTER SEQUENCE public.ticket_number_seq RESTART WITH 1;
+  ALTER SEQUENCE public.receipt_number_seq RESTART WITH 1;
 
   -- Storage is deliberately NOT touched here. Supabase protects
   -- storage.objects with a trigger (storage.protect_delete) that rejects a
@@ -115,6 +122,7 @@ SELECT
   (SELECT count(*) FROM auth.users)             AS accounts,
   (SELECT count(*) FROM public.profiles)        AS profiles,
   (SELECT count(*) FROM public.tickets)         AS tickets,
+  (SELECT count(*) FROM public.ticket_receipts) AS receipts,
   (SELECT count(*) FROM public.notifications)   AS notifications,
   (SELECT count(*) FROM public.admin_alerts)    AS alerts,
   (SELECT count(*) FROM public.inventory_items) AS inventory_items,
@@ -130,11 +138,13 @@ SELECT
 -- Dashboard  →  Storage  →  open each bucket  →  select all  →  Delete:
 --      ticket-photos
 --      ticket-voice-notes
+--      ticket-videos
 --      inventory-csv-imports
 --
 -- Or from the CLI:
 --      supabase storage rm --experimental -r ss:///ticket-photos
 --      supabase storage rm --experimental -r ss:///ticket-voice-notes
+--      supabase storage rm --experimental -r ss:///ticket-videos
 --
 -- Skipping it is safe for testing. Every ticket_attachments row is gone, so
 -- nothing references those files and the app cannot sign a URL for them.
@@ -146,6 +156,6 @@ SELECT
   count(*)                       AS files,
   pg_size_pretty(sum((metadata->>'size')::bigint)) AS total_size
 FROM storage.objects
-WHERE bucket_id IN ('ticket-photos', 'ticket-voice-notes', 'inventory-csv-imports')
+WHERE bucket_id IN ('ticket-photos', 'ticket-voice-notes', 'ticket-videos', 'inventory-csv-imports')
 GROUP BY bucket_id
 ORDER BY bucket_id;

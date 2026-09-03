@@ -150,6 +150,11 @@ function isValidPhone(value) {
   return /^(\+94\d{9}|0\d{9})$/.test(digits);
 }
 
+/** Strips a displayed phone number down to what a tel: link accepts. */
+function telHref(value) {
+  return String(value || "").replace(/[^\d+]/g, "");
+}
+
 function truncate(text, max = 120) {
   const value = String(text ?? "");
   return value.length > max ? `${value.slice(0, max - 1)}…` : value;
@@ -263,6 +268,7 @@ if (typeof module !== "undefined" && module.exports) {
     validateUpload,
     safeFileName,
     isValidPhone,
+    telHref,
     truncate,
     formatDateTime,
     relativeTime,

@@ -21,6 +21,7 @@ const files = [
   "index.html",
   "login.html",
   "register.html",
+  "reset-password.html",
   "customer.html",
   "agent.html",
   "technician.html",

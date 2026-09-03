@@ -521,7 +521,12 @@ function currentCompany() {
 // portals — every signed-in role can reach it, none of them has a nav tab
 // for it. Kept separate from dashboardRoutes so nav-tab logic elsewhere
 // never has to special-case it.
-const extraAuthedRoutes = ["tickets"];
+// reset-password isn't gated by canAccessRoute() like the rest of this list
+// - render() special-cases it directly, since it must work both with a
+// fresh recovery session (currentUser set) and without one (expired link,
+// nothing to gate). Listed here only so currentRoute() recognizes the
+// filename in the first place.
+const extraAuthedRoutes = ["tickets", "reset-password"];
 
 function currentRoute() {
   const pageName = window.location.pathname.split("/").pop().replace(".html", "");
@@ -755,6 +760,94 @@ async function signInUser(event) {
     saveState();
     showToast("Login successful.", "success");
     navigateTo(state.role);
+  } catch (err) {
+    showToast(friendlyError(err), "error");
+  } finally {
+    isDataLoading = false;
+    render();
+  }
+}
+
+async function requestPasswordReset(event) {
+  event.preventDefault();
+  if (!supabaseClient) {
+    showToast("Supabase is not configured.", "warning");
+    return;
+  }
+
+  const form = new FormData(event.target);
+  const email = String(form.get("email") || "").trim();
+
+  isDataLoading = true;
+  render();
+
+  try {
+    const { error } = await supabaseClient.auth.resetPasswordForEmail(email, {
+      redirectTo: `${window.location.origin}/reset-password.html`
+    });
+
+    // Same message whether or not the address is registered - confirming an
+    // account exists from this response would let someone enumerate real
+    // customer/staff emails one attempt at a time.
+    if (error) {
+      console.error(error);
+    }
+
+    showForgotPassword = false;
+    await showModal({
+      title: "Check Your Email",
+      body: "If an account exists for that address, a password reset link is on its way. Check your inbox and spam folder - the link expires after a short time.",
+      icon: "success",
+      actions: [{ label: "OK", value: true, primary: true }]
+    });
+  } catch (err) {
+    console.error(err);
+    showForgotPassword = false;
+    showToast("Something went wrong sending the reset link. Please try again.", "error");
+  } finally {
+    isDataLoading = false;
+    render();
+  }
+}
+
+async function updatePassword(event) {
+  event.preventDefault();
+  if (!supabaseClient) {
+    showToast("Supabase is not configured.", "warning");
+    return;
+  }
+
+  const form = new FormData(event.target);
+  const password = form.get("password");
+  const confirmPassword = form.get("confirmPassword");
+
+  if (password !== confirmPassword) {
+    showToast("Passwords do not match.", "error");
+    return;
+  }
+
+  isDataLoading = true;
+  render();
+
+  try {
+    const { error } = await supabaseClient.auth.updateUser({ password });
+    if (error) {
+      showToast(friendlyError(error.message), "error");
+      return;
+    }
+
+    await showModal({
+      title: "Password Updated",
+      body: "Your password has been changed. Please log in with your new password.",
+      icon: "success",
+      actions: [{ label: "Go to login", value: true, primary: true }]
+    });
+
+    // The recovery session is single-purpose - end it and send them to a
+    // fresh login with the new password, rather than silently landing them
+    // in a dashboard from a link that may have sat in an inbox for a while.
+    await supabaseClient.auth.signOut();
+    window.location.href = "login.html";
   } catch (err) {
     showToast(friendlyError(err), "error");
   } finally {
@@ -1303,20 +1396,24 @@ async function createTicket(event) {
       ticket.id = realTicket.id;
       ticket.number = realTicket.ticket_number;
 
-      // Each attachment type has its own bucket; upload() failure for one
-      // must not block the others, and each failed one gets offered a retry.
+      // Each attachment type has its own bucket, its own storage path and
+      // its own ticket_attachments row - nothing shared between them - so
+      // they upload concurrently instead of one after another. A failure in
+      // one must not block the others, and each failed one gets offered a
+      // retry.
       const uploads = [
         { file: photoFile, bucket: "ticket-photos", kind: "photo" },
         { file: voiceFile, bucket: "ticket-voice-notes", kind: "voice" },
         { file: videoFile, bucket: "ticket-videos", kind: "video" }
-      ];
-      const failed = [];
+      ].filter((upload) => upload.file && upload.file.size > 0);
 
-      for (const upload of uploads) {
-        if (!upload.file || upload.file.size === 0) continue;
-        const path = await uploadAttachment(realTicket.id, upload.file, upload.bucket, upload.kind);
-        if (!path) failed.push(upload);
-      }
+      const results = await Promise.all(
+        uploads.map(async (upload) => ({
+          upload,
+          path: await uploadAttachment(realTicket.id, upload.file, upload.bucket, upload.kind)
+        }))
+      );
+      const failed = results.filter((result) => !result.path).map((result) => result.upload);
 
       if (failed.length) {
         const retry = await showModal({
@@ -1330,11 +1427,13 @@ async function createTicket(event) {
         });
 
         if (retry) {
-          const stillFailed = [];
-          for (const upload of failed) {
-            const path = await uploadAttachment(realTicket.id, upload.file, upload.bucket, upload.kind);
-            if (!path) stillFailed.push(upload);
-          }
+          const retryResults = await Promise.all(
+            failed.map(async (upload) => ({
+              upload,
+              path: await uploadAttachment(realTicket.id, upload.file, upload.bucket, upload.kind)
+            }))
+          );
+          const stillFailed = retryResults.filter((result) => !result.path);
           // uploadAttachment() already toasts its own error per file on
           // failure — only claim success here if the retry actually cleared
           // every failure, instead of announcing it unconditionally.
@@ -2359,6 +2458,15 @@ function renderTicketDetail(ticket) {
   const role = userRole();
   const isStaff = ["agent", "technician", "admin"].includes(role);
   const canDeleteContent = role === "admin";
+  // Prefer the freshly-loaded detail record over the cached dashboard list:
+  // state.tickets only updates from the realtime subscription, which can
+  // silently drop (backgrounded tab, network blip) and leave a permission
+  // decision looking at a stale assignee until the next full reload.
+  // currentDetail() is refetched whenever this ticket is (re)selected, so
+  // it is the more current of the two whenever it has loaded.
+  const assignedTechnicianId = detail?.ticket
+    ? detail.ticket.assigned_technician_id
+    : ticket.assignedTechnicianId;
   // Mirrors the "Staff update tickets" RLS policy exactly: an agent or admin
   // may edit any ticket, but a technician only one assigned to them — not
   // every ticket in the queue. Showing the edit form more broadly than the
@@ -2366,7 +2474,7 @@ function renderTicketDetail(ticket) {
   const canEditAsStaff =
     role === "agent" ||
     role === "admin" ||
-    (role === "technician" && ticket.assignedTechnicianId === currentProfile?.id);
+    (role === "technician" && assignedTechnicianId === currentProfile?.id);
   const canEdit = canEditAsStaff || (ticket.status === "new" && detail?.ticket?.created_by === currentProfile?.id);
   // Mirrors reassign_ticket()'s own permission check: a technician may only
   // touch a job that is unclaimed or already theirs. The control used to be
@@ -2377,12 +2485,12 @@ function renderTicketDetail(ticket) {
     role === "agent" ||
     role === "admin" ||
     (role === "technician" &&
-      (!ticket.assignedTechnicianId || ticket.assignedTechnicianId === currentProfile?.id));
+      (!assignedTechnicianId || assignedTechnicianId === currentProfile?.id));
   // A technician claiming an unclaimed job may only claim it for themselves
   // — reassign_ticket() now rejects handing an unclaimed job to a colleague,
   // so don't offer that colleague as an option in the first place.
   const technicianOptions =
-    role === "technician" && !ticket.assignedTechnicianId
+    role === "technician" && !assignedTechnicianId
       ? state.technicians.filter((technician) => technician.id === currentProfile?.id)
       : state.technicians;
   const comments = ticketComments(ticket.id);
@@ -2398,7 +2506,7 @@ function renderTicketDetail(ticket) {
   const callback = detail?.callback;
   const hasCoords = detail?.ticket?.location_lat != null && detail?.ticket?.location_lng != null;
   const nextStatuses = allowedStatusTransitions(role, ticket.status);
-  const selectedTechnicianId = ticket.assignedTechnicianId || "";
+  const selectedTechnicianId = assignedTechnicianId || "";
 
   return `
     <section class="detail-grid" id="ticketDetail">
@@ -2445,7 +2553,7 @@ function renderTicketDetail(ticket) {
             detail?.ticket?.site_contact_phone
               ? `<div>
                    <dt>Site contact</dt>
-                   <dd><a href="tel:${escapeHtml(detail.ticket.site_contact_phone.replace(/[^\d+]/g, ""))}">${escapeHtml(detail.ticket.site_contact_phone)}</a></dd>
+                   <dd><a href="tel:${escapeHtml(telHref(detail.ticket.site_contact_phone))}">${escapeHtml(detail.ticket.site_contact_phone)}</a></dd>
                  </div>`
               : ""
           }
@@ -2614,7 +2722,31 @@ function renderTicketDetail(ticket) {
 }
 
 
+// Toggles the login page between the normal form and the "email me a reset
+// link" form, without a route change - Supabase needs a real page
+// (reset-password.html) for the link itself, but requesting the link is
+// just a different view of the same login screen.
+let showForgotPassword = false;
+
 function loginPage(message = "") {
+  if (showForgotPassword) {
+    return `
+      <section class="auth-page">
+        <form class="panel auth-card" id="forgotPasswordForm">
+          <p class="auth-kicker">Secure helpdesk access</p>
+          <h2>Reset your password</h2>
+          <p class="muted">Enter the email on your account and we will send a link to set a new password.</p>
+          <div class="field">
+            <label for="forgot-email">Email</label>
+            <input id="forgot-email" name="email" type="email" required />
+          </div>
+          <button class="primary-button" type="submit">Send reset link</button>
+          <p class="auth-switch"><a href="#" id="backToLoginLink">Back to login</a></p>
+        </form>
+      </section>
+    `;
+  }
+
   return `
     <section class="auth-page">
       <form class="panel auth-card" id="loginForm">
@@ -2630,8 +2762,49 @@ function loginPage(message = "") {
           <input id="login-password" name="password" type="password" required />
         </div>
         <button class="primary-button" type="submit">Login</button>
-
+        <p class="auth-switch"><a href="#" id="forgotPasswordLink">Forgot password?</a></p>
         <p class="auth-switch">New customer? <a href="register.html">Create an account</a></p>
+      </form>
+    </section>
+  `;
+}
+
+function resetPasswordPage() {
+  // Supabase appends #access_token=...&type=recovery&... to the redirect
+  // URL from the reset email. Checking for it directly is synchronous and
+  // available on first render - waiting on the PASSWORD_RECOVERY auth event
+  // instead would work too, but only after an async round trip the page
+  // would otherwise render once before.
+  const hasRecoveryToken = window.location.hash.includes("type=recovery");
+
+  if (!hasRecoveryToken) {
+    return `
+      <section class="auth-page">
+        <article class="panel auth-card">
+          <p class="auth-kicker">Reset password</p>
+          <h2>This link has expired</h2>
+          <p class="muted">Password reset links are single-use and expire after a short time. Request a new one from the login page.</p>
+          <a class="primary-button" href="login.html">Back to login</a>
+        </article>
+      </section>
+    `;
+  }
+
+  return `
+    <section class="auth-page">
+      <form class="panel auth-card" id="resetPasswordForm">
+        <p class="auth-kicker">Reset password</p>
+        <h2>Choose a new password</h2>
+        <p class="muted">This link is single-use. Set a new password to finish signing back in.</p>
+        <div class="field">
+          <label for="new-password">New password</label>
+          <input id="new-password" name="password" type="password" minlength="6" required />
+        </div>
+        <div class="field">
+          <label for="confirm-password">Confirm password</label>
+          <input id="confirm-password" name="confirmPassword" type="password" minlength="6" required />
+        </div>
+        <button class="primary-button" type="submit">Set new password</button>
       </form>
     </section>
   `;
@@ -2828,7 +3001,7 @@ function agentView() {
               <span class="small muted">${escapeHtml(callback.customer)} · waiting ${escapeHtml(callback.waitingSince)}</span>
             </div>
             <div class="action-row">
-              <a class="secondary-button compact-button" href="tel:${escapeHtml(callback.phone.replace(/[^\d+]/g, ""))}">Call</a>
+              <a class="secondary-button compact-button" href="tel:${escapeHtml(telHref(callback.phone))}">Call</a>
               <button class="primary-button compact-button" type="button" data-complete-callback="${escapeHtml(callback.id)}">Done</button>
             </div>
           </div>`
@@ -3103,6 +3276,16 @@ function render() {
     return;
   }
 
+  // Checked before the logged-in-redirect below: a password reset link logs
+  // the visitor in via a short-lived recovery session, so currentUser is
+  // set here on a legitimate visit. Redirecting them into the dashboard
+  // instead of letting them set a new password would defeat the feature.
+  if (route === "reset-password") {
+    app.innerHTML = resetPasswordPage();
+    bindEvents();
+    return;
+  }
+
   if (currentUser && publicRoutes.includes(route)) {
     navigateTo(dashboardRouteForRole());
     return;
@@ -3202,7 +3385,11 @@ function updateNavigation(route) {
   const publicLinks = document.querySelectorAll(".public-link");
   const signOutBtnGlobal = document.querySelector("#signOutBtnGlobal");
   const allowedRoutes = allowedDashboardRoutes();
-  const isLoggedIn = Boolean(currentUser);
+  // A password reset link establishes a real currentUser via a short-lived
+  // recovery session, but showing the full portal nav here would invite
+  // clicking into a dashboard mid-reset. Treat this page as logged-out for
+  // navigation purposes regardless of that session.
+  const isLoggedIn = Boolean(currentUser) && route !== "reset-password";
 
   if (appNav) appNav.hidden = !isLoggedIn;
   if (signOutBtnGlobal) signOutBtnGlobal.hidden = !isLoggedIn;
@@ -3380,6 +3567,30 @@ function bindEvents() {
   const loginForm = document.querySelector("#loginForm");
   if (loginForm) loginForm.onsubmit = signInUser;
 
+  const forgotPasswordLink = document.querySelector("#forgotPasswordLink");
+  if (forgotPasswordLink) {
+    forgotPasswordLink.onclick = (event) => {
+      event.preventDefault();
+      showForgotPassword = true;
+      render();
+    };
+  }
+
+  const backToLoginLink = document.querySelector("#backToLoginLink");
+  if (backToLoginLink) {
+    backToLoginLink.onclick = (event) => {
+      event.preventDefault();
+      showForgotPassword = false;
+      render();
+    };
+  }
+
+  const forgotPasswordForm = document.querySelector("#forgotPasswordForm");
+  if (forgotPasswordForm) forgotPasswordForm.onsubmit = requestPasswordReset;
+
+  const resetPasswordForm = document.querySelector("#resetPasswordForm");
+  if (resetPasswordForm) resetPasswordForm.onsubmit = updatePassword;
+
   const registerForm = document.querySelector("#registerForm");
   if (registerForm) registerForm.onsubmit = signUpUser;
 
@@ -3481,7 +3692,11 @@ if (supabaseClient) {
 
 loadCurrentUser()
   .then(async () => {
-    if (currentUser) {
+    // A password reset link signs the visitor in via a short-lived recovery
+    // session so it can call updateUser() - that is not a real login, and
+    // loading the full dashboard for it is both wasted work and the wrong
+    // screen to land on before a new password has even been set.
+    if (currentUser && currentRoute() !== "reset-password") {
       subscribeToTicketUpdates();
       await loadRealSupportData({ shouldRender: false });
       if (state.selectedTicketId) await loadTicketDetail(state.selectedTicketId);

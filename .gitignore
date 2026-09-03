@@ -16,3 +16,5 @@ config.local.js
 
 # Local tooling scratch directories — never project content.
 .claude/
+.vercel
+.env*
