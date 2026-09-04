@@ -63,7 +63,15 @@ CREATE POLICY "Ticket files uploadable by ticket viewers"
 --    p_service_call_number is a new 4th parameter with a default, so
 --    every existing caller (customer closing their own ticket, agent/admin
 --    changing any status) keeps working unchanged.
+--
+--    Postgres identifies a function by name AND argument list, so adding a
+--    parameter does not replace the old 3-argument version - it silently
+--    creates a second overload sitting alongside it. Drop the old
+--    signature explicitly, or the app (which now always calls the
+--    4-argument form) leaves it as permanent, confusing dead weight.
 -- ---------------------------------------------------------------------
+DROP FUNCTION IF EXISTS public.change_ticket_status(uuid, public.ticket_status, integer);
+
 CREATE OR REPLACE FUNCTION public.change_ticket_status(
   p_ticket_id uuid,
   p_new_status public.ticket_status,
