@@ -127,7 +127,7 @@ Authentication → URL Configuration:
 Database → Replication: enable for `tickets`, `ticket_comments`, `admin_alerts`
 
 Storage: `ticket-photos`, `ticket-voice-notes`, `ticket-videos`,
-`inventory-csv-imports` must all show **Private**. Migrations 0003 and 0005
+`ticket-service-receipts`, `inventory-csv-imports` must all show **Private**. Migrations 0003, 0005 and 0007
 set this; confirm in the UI.
 
 **Custom SMTP — do not skip this.** Supabase's built-in mailer (used for

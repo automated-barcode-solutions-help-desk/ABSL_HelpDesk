@@ -34,7 +34,7 @@ BEGIN
   SELECT count(*) INTO v_users   FROM auth.users;
   SELECT count(*) INTO v_tickets FROM public.tickets;
   SELECT count(*) INTO v_files   FROM storage.objects
-    WHERE bucket_id IN ('ticket-photos', 'ticket-voice-notes', 'ticket-videos', 'inventory-csv-imports');
+    WHERE bucket_id IN ('ticket-photos', 'ticket-voice-notes', 'ticket-videos', 'ticket-service-receipts', 'inventory-csv-imports');
 
   IF NOT v_i_am_sure THEN
     RAISE EXCEPTION
@@ -139,12 +139,14 @@ SELECT
 --      ticket-photos
 --      ticket-voice-notes
 --      ticket-videos
+--      ticket-service-receipts
 --      inventory-csv-imports
 --
 -- Or from the CLI:
 --      supabase storage rm --experimental -r ss:///ticket-photos
 --      supabase storage rm --experimental -r ss:///ticket-voice-notes
 --      supabase storage rm --experimental -r ss:///ticket-videos
+--      supabase storage rm --experimental -r ss:///ticket-service-receipts
 --
 -- Skipping it is safe for testing. Every ticket_attachments row is gone, so
 -- nothing references those files and the app cannot sign a URL for them.
@@ -156,6 +158,6 @@ SELECT
   count(*)                       AS files,
   pg_size_pretty(sum((metadata->>'size')::bigint)) AS total_size
 FROM storage.objects
-WHERE bucket_id IN ('ticket-photos', 'ticket-voice-notes', 'ticket-videos', 'inventory-csv-imports')
+WHERE bucket_id IN ('ticket-photos', 'ticket-voice-notes', 'ticket-videos', 'ticket-service-receipts', 'inventory-csv-imports')
 GROUP BY bucket_id
 ORDER BY bucket_id;

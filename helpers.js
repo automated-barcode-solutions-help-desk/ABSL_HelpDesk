@@ -24,6 +24,11 @@ const UPLOAD_LIMITS = {
     maxBytes: 50 * 1024 * 1024,
     types: ["video/mp4", "video/webm", "video/quicktime", "video/x-m4v", "video/3gpp"],
     label: "video clip"
+  },
+  service_receipt: {
+    maxBytes: 8 * 1024 * 1024,
+    types: ["image/jpeg", "image/png", "image/webp", "image/heic", "image/heif"],
+    label: "service call receipt photo"
   }
 };
 

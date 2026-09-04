@@ -95,6 +95,11 @@ test("validateUpload accepts a normal phone photo and a webm voice note", () => 
   assert.equal(h.validateUpload({ size: 300 * 1024, type: "audio/webm" }, "voice").ok, true);
 });
 
+test("validateUpload accepts a service call receipt photo and rejects a PDF", () => {
+  assert.equal(h.validateUpload({ size: 1.5 * 1024 * 1024, type: "image/jpeg" }, "service_receipt").ok, true);
+  assert.equal(h.validateUpload({ size: 500 * 1024, type: "application/pdf" }, "service_receipt").ok, false);
+});
+
 // Regression: MediaRecorder reports the codec as a parameter on the media
 // type, so a recording made inside the app was being rejected by the app.
 test("validateUpload accepts what MediaRecorder actually produces", () => {

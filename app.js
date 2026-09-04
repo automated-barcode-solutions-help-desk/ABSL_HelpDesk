@@ -257,6 +257,80 @@ function openReceiptModal(receiptId) {
   overlay.classList.add("is-visible");
 }
 
+// A technician resolving a job must show proof of the work: the service
+// call number from their paper docket, plus a photo of it. Both are
+// required by change_ticket_status() itself (0007) for a technician
+// resolving - this form exists so the requirement is met before the RPC is
+// even called, instead of the plain status button just failing.
+function openResolveTicketModal(ticketId) {
+  const overlay = document.getElementById("modalOverlay");
+  const card = document.getElementById("modalCard");
+  if (!overlay || !card) return;
+
+  card.innerHTML = `
+    <h3>Resolve This Ticket</h3>
+    <p class="muted small">Attach the service call receipt before marking this job resolved.</p>
+    <form id="resolveTicketForm">
+      <div class="field">
+        <label for="resolve-service-call-number">Service call number</label>
+        <input id="resolve-service-call-number" name="serviceCallNumber" required maxlength="60" placeholder="e.g. SC-2026-0042" />
+      </div>
+      <div class="field">
+        <label for="resolve-receipt-photo">Receipt photo</label>
+        <input id="resolve-receipt-photo" name="receiptPhoto" type="file" accept="image/png,image/jpeg,image/webp" required />
+      </div>
+      <div class="modal-actions">
+        <button class="secondary-button" type="button" data-close-modal>Cancel</button>
+        <button class="primary-button" type="submit">Mark Resolved</button>
+      </div>
+    </form>
+  `;
+
+  card.querySelector("[data-close-modal]").onclick = () => {
+    overlay.classList.remove("is-visible");
+  };
+
+  card.querySelector("#resolveTicketForm").onsubmit = async (event) => {
+    event.preventDefault();
+    const form = new FormData(event.target);
+    const serviceCallNumber = String(form.get("serviceCallNumber") || "").trim();
+    const receiptPhoto = form.get("receiptPhoto");
+
+    if (!serviceCallNumber) {
+      showToast("A service call number is required.", "warning");
+      return;
+    }
+
+    if (!receiptPhoto || !receiptPhoto.size) {
+      showToast("A photo of the service call receipt is required.", "warning");
+      return;
+    }
+
+    const check = validateUpload(receiptPhoto, "service_receipt");
+    if (!check.ok) {
+      showToast(check.message, "warning");
+      return;
+    }
+
+    const submitBtn = card.querySelector("#resolveTicketForm button[type=submit]");
+    if (submitBtn) submitBtn.disabled = true;
+
+    // The receipt has to exist in the database before the status RPC will
+    // accept the resolution - change_ticket_status() checks for the row,
+    // not just that this form was filled in.
+    const path = await uploadAttachment(ticketId, receiptPhoto, "ticket-service-receipts", "service_receipt");
+    if (!path) {
+      if (submitBtn) submitBtn.disabled = false;
+      return; // uploadAttachment() already toasted the specific error
+    }
+
+    overlay.classList.remove("is-visible");
+    await updateTicketStatus(ticketId, "resolved", serviceCallNumber);
+  };
+
+  overlay.classList.add("is-visible");
+}
+
 function showConfirm(message, title = "Confirm Action") {
   return showModal({
     title,
@@ -849,13 +923,14 @@ async function openTicket(ticketId) {
   render();
 }
 
-async function changeRealTicketStatus(ticketId, newStatus, expectedVersion) {
+async function changeRealTicketStatus(ticketId, newStatus, expectedVersion, serviceCallNumber = null) {
   if (!supabaseClient) return { ok: false, message: "Offline mode" };
 
   const { error } = await supabaseClient.rpc("change_ticket_status", {
     p_ticket_id: ticketId,
     p_new_status: newStatus,
-    p_expected_version: expectedVersion
+    p_expected_version: expectedVersion,
+    p_service_call_number: serviceCallNumber
   });
 
   if (error) {
@@ -865,12 +940,12 @@ async function changeRealTicketStatus(ticketId, newStatus, expectedVersion) {
   return { ok: true };
 }
 
-async function updateTicketStatus(ticketId, status) {
+async function updateTicketStatus(ticketId, status, serviceCallNumber = null) {
   const ticket = state.tickets.find((item) => item.id === ticketId);
   if (!ticket) return;
 
   if (supabaseClient && isUuid(ticket.id)) {
-    const res = await changeRealTicketStatus(ticket.id, status, ticket.version);
+    const res = await changeRealTicketStatus(ticket.id, status, ticket.version, serviceCallNumber);
     if (!res.ok) {
       // Diagram 18: the loser of a race is shown what actually happened and
       // asked to decide again. The old flow offered "Refresh & Overwrite",
@@ -896,7 +971,7 @@ async function updateTicketStatus(ticketId, status) {
         render();
 
         if (proceed && latest && latest.status !== status) {
-          const retry = await changeRealTicketStatus(latest.id, status, latest.version);
+          const retry = await changeRealTicketStatus(latest.id, status, latest.version, serviceCallNumber);
           if (!retry.ok) {
             showToast(friendlyError(retry.message), "error");
             return;
@@ -2313,6 +2388,15 @@ function attachmentGallery(detail) {
                     </div>`;
           }
 
+          if (attachment.file_type === "service_receipt") {
+            return `<figure class="attachment attachment-photo">
+                      <a href="${escapeHtml(attachment.url)}" target="_blank" rel="noopener noreferrer">
+                        <img src="${escapeHtml(attachment.url)}" alt="Service call receipt: ${name}" loading="lazy" />
+                      </a>
+                      <figcaption class="small muted">🧾 Service call receipt · ${name}${size}</figcaption>
+                    </figure>`;
+          }
+
           return `<figure class="attachment attachment-photo">
                     <a href="${escapeHtml(attachment.url)}" target="_blank" rel="noopener noreferrer">
                       <img src="${escapeHtml(attachment.url)}" alt="Photo attached to this ticket: ${name}" loading="lazy" />
@@ -2486,6 +2570,14 @@ function renderTicketDetail(ticket) {
               ? `<div>
                    <dt>Site contact</dt>
                    <dd><a href="tel:${escapeHtml(telHref(detail.ticket.site_contact_phone))}">${escapeHtml(detail.ticket.site_contact_phone)}</a></dd>
+                 </div>`
+              : ""
+          }
+          ${
+            detail?.ticket?.service_call_number
+              ? `<div>
+                   <dt>Service call number</dt>
+                   <dd class="mono">${escapeHtml(detail.ticket.service_call_number)}</dd>
                  </div>`
               : ""
           }
@@ -3458,7 +3550,15 @@ function bindEvents() {
   });
 
   document.querySelectorAll("[data-status]").forEach((button) => {
-    button.onclick = () => updateTicketStatus(button.dataset.ticket, button.dataset.status);
+    button.onclick = () => {
+      const ticketId = button.dataset.ticket;
+      const status = button.dataset.status;
+      if (status === "resolved" && userRole() === "technician") {
+        openResolveTicketModal(ticketId);
+        return;
+      }
+      updateTicketStatus(ticketId, status);
+    };
   });
 
   document.querySelectorAll("[data-use-part]").forEach((button) => {

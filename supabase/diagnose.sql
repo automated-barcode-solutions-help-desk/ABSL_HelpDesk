@@ -22,7 +22,10 @@ SELECT
   (SELECT count(*) FROM pg_proc     WHERE proname = 'generate_ticket_receipt')    AS m0005_receipt_trigger_fn,
   (SELECT pg_get_functiondef('public.queue_comment_notification'::regproc) LIKE '%assigned_technician_id%') AS m0006_reply_notify_fixed,
   (SELECT pg_get_functiondef('public.queue_comment_notification'::regproc) LIKE '%role IN (%agent%admin%') AS m0006_unassigned_reply_broadcast,
-  (SELECT pg_get_functiondef('public.reassign_ticket'::regproc) LIKE '%claim an unassigned job for yourself%') AS m0006_claim_only_for_self;
+  (SELECT pg_get_functiondef('public.reassign_ticket'::regproc) LIKE '%claim an unassigned job for yourself%') AS m0006_claim_only_for_self,
+  (SELECT count(*) FROM information_schema.columns
+     WHERE table_name = 'tickets' AND column_name = 'service_call_number')     AS m0007_service_call_column,
+  (SELECT pg_get_functiondef('public.change_ticket_status'::regproc) LIKE '%service call number is required%') AS m0007_resolve_requires_receipt;
 -- Expect: policies 30+, every other column 1, and all three m0006_* columns = true.
 -- Those have no separate object to count — 0006 only CREATE OR REPLACEs
 -- existing functions — so the live functions' own source is the only proof.
