@@ -59,6 +59,9 @@ BEGIN
   -- outlive the ticket it came from), so deleting tickets first would leave
   -- every old receipt behind, orphaned but intact. Explicit for a full reset.
   DELETE FROM public.ticket_receipts;
+  -- Same reasoning: client_error_logs.profile_id is ON DELETE SET NULL, so
+  -- old error reports would otherwise survive with no owner.
+  DELETE FROM public.client_error_logs;
   DELETE FROM public.tickets;
   DELETE FROM public.approval_requests;
   DELETE FROM public.profiles;
@@ -123,6 +126,7 @@ SELECT
   (SELECT count(*) FROM public.profiles)        AS profiles,
   (SELECT count(*) FROM public.tickets)         AS tickets,
   (SELECT count(*) FROM public.ticket_receipts) AS receipts,
+  (SELECT count(*) FROM public.client_error_logs) AS client_errors,
   (SELECT count(*) FROM public.notifications)   AS notifications,
   (SELECT count(*) FROM public.admin_alerts)    AS alerts,
   (SELECT count(*) FROM public.inventory_items) AS inventory_items,

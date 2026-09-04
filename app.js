@@ -51,7 +51,8 @@ const portals = {
       "approvals",
       "notifications",
       "alerts",
-      "receipts"
+      "receipts",
+      "clientErrors"
     ]
   }
 };
@@ -82,6 +83,7 @@ const initialState = {
   staffNames: {},
   callbackQueue: [],
   receipts: [],
+  clientErrors: [],
   filters: { query: "", status: "all", priority: "all" },
   page: 1
 };
@@ -538,7 +540,7 @@ const extraAuthedRoutes = ["tickets", "reset-password"];
 // Alerts, Resolution Receipts). Unlike extraAuthedRoutes, these need more
 // than "someone is signed in" - the data behind them is admin-only, so
 // canAccessRoute() checks the role, not just Boolean(currentUser).
-const adminOnlyExtraRoutes = ["approvals", "notifications", "system-alerts", "receipts"];
+const adminOnlyExtraRoutes = ["approvals", "notifications", "system-alerts", "receipts", "client-errors"];
 
 function currentRoute() {
   const pageName = window.location.pathname.split("/").pop().replace(".html", "");
@@ -598,7 +600,8 @@ function routeLabel(route) {
     approvals: "User Approvals",
     notifications: "Notifications",
     "system-alerts": "Admin System Alerts",
-    receipts: "Resolution Receipts"
+    receipts: "Resolution Receipts",
+    "client-errors": "Client Errors"
   };
   return labels[route] || "Page";
 }
@@ -1961,6 +1964,96 @@ async function acknowledgeAlert(alertId) {
   }
 }
 
+// A browser JS error a real user hit, reported by logClientError() below.
+// Same visibility model as admin_alerts: admin-only, acknowledge to clear.
+async function loadRealClientErrors() {
+  if (!supabaseClient || userRole() !== "admin") return;
+
+  const { data, error } = await supabaseClient
+    .from("client_error_logs")
+    .select("*")
+    .order("created_at", { ascending: false })
+    .limit(200);
+
+  if (error) {
+    console.error(error);
+    return;
+  }
+
+  state.clientErrors = data || [];
+}
+
+async function acknowledgeClientError(errorId) {
+  if (!supabaseClient || !isUuid(errorId)) return;
+
+  isDataLoading = true;
+  render();
+
+  try {
+    const updated = await updateRecord("client_error_logs", errorId, {
+      acknowledged: true,
+      acknowledged_by: currentProfile?.id || null,
+      acknowledged_at: new Date().toISOString()
+    });
+
+    if (updated) {
+      showToast("Error acknowledged.", "success");
+      await loadRealClientErrors();
+    }
+  } catch (err) {
+    showToast(friendlyError(err), "error");
+  } finally {
+    isDataLoading = false;
+    render();
+  }
+}
+
+// The last error message logged and when, so a tight failing loop reports
+// once instead of flooding the table with the same row hundreds of times.
+let lastLoggedError = { message: "", at: 0 };
+
+// Fire-and-forget by design: reporting an error must never itself throw,
+// block the UI, or affect what the user was doing when it happened.
+// Unauthenticated visitors (login/register) are not logged - there is no
+// one to attribute the row to, and it would otherwise be an open,
+// unauthenticated write endpoint.
+async function logClientError(message, stack) {
+  if (!supabaseClient || !currentUser) return;
+
+  const safeMessage = String(message || "Unknown error").slice(0, 2000);
+  const now = Date.now();
+  if (safeMessage === lastLoggedError.message && now - lastLoggedError.at < 30000) {
+    return;
+  }
+  lastLoggedError = { message: safeMessage, at: now };
+
+  try {
+    await supabaseClient.from("client_error_logs").insert({
+      profile_id: currentUser.id,
+      message: safeMessage,
+      stack: stack ? String(stack).slice(0, 8000) : null,
+      page_url: window.location.href.slice(0, 500),
+      user_agent: navigator.userAgent
+    });
+  } catch (err) {
+    // Logging the failure to log is exactly the loop this function exists
+    // to avoid - console only, never rethrow.
+    console.error("Failed to record client error", err);
+  }
+}
+
+window.addEventListener("error", (event) => {
+  logClientError(event.error?.message || event.message, event.error?.stack);
+});
+
+window.addEventListener("unhandledrejection", (event) => {
+  const reason = event.reason;
+  logClientError(
+    reason instanceof Error ? reason.message : String(reason),
+    reason instanceof Error ? reason.stack : undefined
+  );
+});
+
 async function loadRealSupportData(options = {}) {
   const shouldRender = options?.shouldRender !== false;
 
@@ -1981,7 +2074,8 @@ async function loadRealSupportData(options = {}) {
     approvals: loadRealApprovals,
     notifications: loadRealNotifications,
     alerts: loadRealAdminAlerts,
-    receipts: loadRealReceipts
+    receipts: loadRealReceipts,
+    clientErrors: loadRealClientErrors
   };
 
   try {
@@ -3174,9 +3268,29 @@ function receiptRowHtml(receipt) {
   `;
 }
 
-// route -> { title, badge, items, rowRenderer, emptyMessage } for the four
+function clientErrorRowHtml(err) {
+  const who = (err.profile_id && state.staffNames[err.profile_id]) || "A customer";
+  const page = (err.page_url || "").replace(window.location.origin, "") || "unknown page";
+
+  return `
+    <div class="inventory-row">
+      <div>
+        <strong>${escapeHtml(truncate(err.message, 140))}</strong>
+        <p class="small muted">${escapeHtml(who)} · ${escapeHtml(page)}</p>
+        <span class="small muted">${escapeHtml(relativeTime(err.created_at))}</span>
+      </div>
+      ${
+        !err.acknowledged
+          ? `<button class="primary-button compact-button" type="button" data-ack-client-error="${escapeHtml(err.id)}">Acknowledge</button>`
+          : `<span class="badge badge-muted">Acknowledged</span>`
+      }
+    </div>
+  `;
+}
+
+// route -> { title, badge, items, rowRenderer, emptyMessage } for the five
 // "See all" pages above. One generic page renderer and one generic route
-// branch in render() use this instead of four near-identical copies.
+// branch in render() use this instead of five near-identical copies.
 function adminListRoutes() {
   return {
     approvals: {
@@ -3202,6 +3316,12 @@ function adminListRoutes() {
       items: state.receipts,
       rowRenderer: receiptRowHtml,
       emptyMessage: "No tickets have been resolved yet."
+    },
+    "client-errors": {
+      title: "Client Errors",
+      items: state.clientErrors,
+      rowRenderer: clientErrorRowHtml,
+      emptyMessage: "No browser errors reported."
     }
   };
 }
@@ -3326,6 +3446,23 @@ function adminView() {
           "receipts.html",
           "receipts",
           "No tickets have been resolved yet."
+        )}
+      </article>
+
+      <article class="panel panel-span-full">
+        <div class="panel-title">
+          <h2>Client Errors</h2>
+          <span class="badge ${state.clientErrors.some((err) => !err.acknowledged) ? "badge-danger" : "badge-muted"}">
+            ${state.clientErrors.filter((err) => !err.acknowledged).length} unacknowledged
+          </span>
+        </div>
+        <p class="muted small">A JavaScript error a real signed-in user actually hit in their browser, reported automatically - not a test, not a log line someone has to go looking for.</p>
+        ${adminListPreview(
+          state.clientErrors,
+          clientErrorRowHtml,
+          "client-errors.html",
+          "errors",
+          "No browser errors reported."
         )}
       </article>
     </section>
@@ -3579,6 +3716,10 @@ function bindEvents() {
 
   document.querySelectorAll("[data-ack-alert]").forEach((button) => {
     button.onclick = () => acknowledgeAlert(button.dataset.ackAlert);
+  });
+
+  document.querySelectorAll("[data-ack-client-error]").forEach((button) => {
+    button.onclick = () => acknowledgeClientError(button.dataset.ackClientError);
   });
 
   document.querySelectorAll("[data-view-receipt]").forEach((button) => {
