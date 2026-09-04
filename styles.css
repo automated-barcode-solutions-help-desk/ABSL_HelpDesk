@@ -1624,7 +1624,7 @@ body[data-portal] .topbar .eyebrow {
   width: min(100%, 320px);
 }
 
-/* --- Recorder / GPS row --- */
+/* --- Inline action + status row (e.g. the GPS location button) --- */
 .recorder-row {
   display: flex;
   align-items: center;

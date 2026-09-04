@@ -90,75 +90,6 @@ const TICKETS_PER_PAGE = 12;
 
 let state = loadState();
 
-// --- Voice recording (Diagram 5) ---------------------------------------
-// The form only accepted an audio file the customer had somehow already
-// recorded. On a phone, in a warehouse, that is not a realistic ask.
-let mediaRecorder = null;
-let recordedVoice = null;
-let recordedChunks = [];
-
-function recorderSupported() {
-  return Boolean(navigator.mediaDevices?.getUserMedia && window.MediaRecorder);
-}
-
-function clearRecordedVoice() {
-  recordedVoice = null;
-  recordedChunks = [];
-  const status = document.querySelector("#recorderStatus");
-  if (status) status.textContent = "Or attach a file below.";
-  const button = document.querySelector("#recordVoiceBtn");
-  if (button) button.textContent = "🎙 Record";
-}
-
-async function toggleVoiceRecording() {
-  const button = document.querySelector("#recordVoiceBtn");
-  const status = document.querySelector("#recorderStatus");
-
-  if (!recorderSupported()) {
-    showToast("This browser cannot record audio. Attach an audio file instead.", "warning");
-    return;
-  }
-
-  if (mediaRecorder && mediaRecorder.state === "recording") {
-    mediaRecorder.stop();
-    return;
-  }
-
-  try {
-    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-    recordedChunks = [];
-    mediaRecorder = new MediaRecorder(stream);
-
-    mediaRecorder.ondataavailable = (event) => {
-      if (event.data.size > 0) recordedChunks.push(event.data);
-    };
-
-    mediaRecorder.onstop = () => {
-      stream.getTracks().forEach((track) => track.stop());
-
-      const blob = new Blob(recordedChunks, { type: mediaRecorder.mimeType || "audio/webm" });
-      recordedVoice = new File([blob], `voice-note-${Date.now()}.webm`, { type: blob.type });
-
-      const check = validateUpload(recordedVoice, "voice");
-      if (!check.ok) {
-        showToast(check.message, "warning");
-        clearRecordedVoice();
-        return;
-      }
-
-      if (button) button.textContent = "🎙 Record again";
-      if (status) status.textContent = `Recorded ${formatBytes(recordedVoice.size)}. It will be attached.`;
-    };
-
-    mediaRecorder.start();
-    if (button) button.textContent = "⏹ Stop";
-    if (status) status.textContent = "Recording… press stop when finished.";
-  } catch (err) {
-    console.error(err);
-    showToast("Microphone permission was refused.", "warning");
-  }
-}
-
 // --- Location capture (Diagram 9) --------------------------------------
 // The schema had location_lat / location_lng from the beginning and nothing
 // ever wrote to them, so the map button only ever did a text search.
@@ -1349,25 +1280,16 @@ async function createTicket(event) {
   event.preventDefault();
   const data = new FormData(event.target);
   const photoFile = data.get("photo");
-  // A voice note recorded in the browser wins over a file picked by hand.
-  const voiceFile = recordedVoice || data.get("voice");
-  const videoFile = data.get("video");
   const wantsCallback = data.get("callback") === "on";
   const callbackPhone = String(data.get("callbackPhone") || "").trim();
   const siteContactPhone = String(data.get("siteContactPhone") || "").trim();
 
-  // Check the attachments before creating anything, so a rejected file does
-  // not leave a ticket with half its evidence missing.
-  for (const [file, kind] of [
-    [photoFile, "photo"],
-    [voiceFile, "voice"],
-    [videoFile, "video"]
-  ]) {
-    const check = validateUpload(file, kind);
-    if (!check.ok) {
-      showToast(check.message, "warning");
-      return;
-    }
+  // Check the photo before creating anything, so a rejected file does not
+  // leave a ticket with no evidence attached at all.
+  const photoCheck = validateUpload(photoFile, "photo");
+  if (!photoCheck.ok) {
+    showToast(photoCheck.message, "warning");
+    return;
   }
 
   if (wantsCallback && !isValidPhone(callbackPhone)) {
@@ -1414,16 +1336,9 @@ async function createTicket(event) {
       ticket.id = realTicket.id;
       ticket.number = realTicket.ticket_number;
 
-      // Each attachment type has its own bucket, its own storage path and
-      // its own ticket_attachments row - nothing shared between them - so
-      // they upload concurrently instead of one after another. A failure in
-      // one must not block the others, and each failed one gets offered a
-      // retry.
-      const uploads = [
-        { file: photoFile, bucket: "ticket-photos", kind: "photo" },
-        { file: voiceFile, bucket: "ticket-voice-notes", kind: "voice" },
-        { file: videoFile, bucket: "ticket-videos", kind: "video" }
-      ].filter((upload) => upload.file && upload.file.size > 0);
+      const uploads = [{ file: photoFile, bucket: "ticket-photos", kind: "photo" }].filter(
+        (upload) => upload.file && upload.file.size > 0
+      );
 
       const results = await Promise.all(
         uploads.map(async (upload) => ({
@@ -1480,7 +1395,6 @@ async function createTicket(event) {
 
     state.selectedTicketId = ticket.id;
     event.target.reset();
-    clearRecordedVoice();
 
     // Re-read from the database rather than trusting the local copy, so the
     // ticket number, timestamps and status all match what was actually saved.
@@ -2889,7 +2803,7 @@ function customerView() {
       <div class="panel">
         <div class="panel-title">
           <h2>Create New Ticket</h2>
-          <span class="badge badge-muted">Photo + voice ready</span>
+          <span class="badge badge-muted">Photo ready</span>
         </div>
         <form id="newTicketForm">
           <!-- Name and company come from the signed-in account. They used to be
@@ -2921,19 +2835,6 @@ function customerView() {
             <label for="photo">Photo</label>
             <input id="photo" name="photo" type="file" accept="image/png,image/jpeg,image/webp" />
             <span class="small muted">JPG, PNG or WebP, up to 8 MB.</span>
-          </div>
-          <div class="field">
-            <label for="voice">Voice note</label>
-            <div class="recorder-row">
-              <button class="secondary-button" type="button" id="recordVoiceBtn">🎙 Record</button>
-              <span id="recorderStatus" class="small muted" aria-live="polite">Or attach a file below.</span>
-            </div>
-            <input id="voice" name="voice" type="file" accept="audio/*" />
-          </div>
-          <div class="field">
-            <label for="video">Video clip</label>
-            <input id="video" name="video" type="file" accept="video/mp4,video/webm,video/quicktime,video/3gpp" />
-            <span class="small muted">A short clip of the fault in action, up to 50 MB.</span>
           </div>
           <div class="form-grid">
             <div class="field">
@@ -3351,7 +3252,7 @@ function render() {
   const views = {
     customer: {
       title: portals.customer.name,
-      description: "Create support tickets, attach photos or voice notes, request callback support, and follow updates.",
+      description: "Create support tickets, attach photos, request callback support, and follow updates.",
       render: customerView
     },
     agent: {
@@ -3600,12 +3501,6 @@ function bindEvents() {
   document.querySelectorAll("[data-complete-callback]").forEach((button) => {
     button.onclick = () => completeCallback(button.dataset.completeCallback);
   });
-
-  const recordVoiceBtn = document.querySelector("#recordVoiceBtn");
-  if (recordVoiceBtn) {
-    if (!recorderSupported()) recordVoiceBtn.hidden = true;
-    recordVoiceBtn.onclick = toggleVoiceRecording;
-  }
 
   const useGpsBtn = document.querySelector("#useGpsBtn");
   if (useGpsBtn) useGpsBtn.onclick = captureLocation;
