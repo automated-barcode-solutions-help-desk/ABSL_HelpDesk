@@ -204,7 +204,13 @@ function showModal({ title, body, icon = "info", actions = [] }) {
 // for a document with real structure. A receipt gets its own layout, built
 // the same way as everything else: every dynamic value passed through
 // escapeHtml individually.
+// Bumped on every call so a slow signed-URL fetch from an earlier click
+// can tell it's been superseded and skip writing into a modal that has
+// since moved on to a different receipt (or closed).
+let receiptModalToken = 0;
+
 async function openReceiptModal(receiptId) {
+  const myToken = ++receiptModalToken;
   const receipt = state.receipts.find((item) => item.id === receiptId);
   const overlay = document.getElementById("modalOverlay");
   const card = document.getElementById("modalCard");
@@ -281,18 +287,30 @@ async function openReceiptModal(receiptId) {
   // URL - fetched after the modal is already open rather than delaying it,
   // same reasoning as loadTicketDetail()'s attachment signing.
   if (receipt.receipt_photo_path && receipt.receipt_photo_bucket && supabaseClient) {
-    const { data: signed, error } = await supabaseClient.storage
-      .from(receipt.receipt_photo_bucket)
-      .createSignedUrl(receipt.receipt_photo_path, 60 * 60);
+    try {
+      const { data: signed, error } = await supabaseClient.storage
+        .from(receipt.receipt_photo_bucket)
+        .createSignedUrl(receipt.receipt_photo_path, 60 * 60);
 
-    const host = card.querySelector("#receiptPhotoHost");
-    if (host) {
-      if (error || !signed?.signedUrl) {
-        host.textContent = "This file could not be opened.";
-      } else {
-        const safeUrl = escapeHtml(signed.signedUrl);
-        host.outerHTML = `<a href="${safeUrl}" target="_blank" rel="noopener noreferrer"><img src="${safeUrl}" alt="Service call receipt photo" style="max-width:100%;border-radius:8px;" /></a>`;
+      // A second click (on this or another receipt) while this was in
+      // flight already owns the modal now - writing this result in would
+      // show the wrong photo (or overwrite content for the new receipt).
+      if (myToken !== receiptModalToken) return;
+
+      const host = card.querySelector("#receiptPhotoHost");
+      if (host) {
+        if (error || !signed?.signedUrl) {
+          host.textContent = "This file could not be opened.";
+        } else {
+          const safeUrl = escapeHtml(signed.signedUrl);
+          host.outerHTML = `<a href="${safeUrl}" target="_blank" rel="noopener noreferrer"><img src="${safeUrl}" alt="Service call receipt photo" style="max-width:100%;border-radius:8px;" /></a>`;
+        }
       }
+    } catch (err) {
+      if (myToken !== receiptModalToken) return;
+      const host = card.querySelector("#receiptPhotoHost");
+      if (host) host.textContent = "This file could not be opened.";
+      console.error("Could not sign receipt photo", err);
     }
   }
 }
@@ -1386,7 +1404,12 @@ async function uploadAttachment(ticketId, file, bucketName, fileType) {
   if (!profile) return null;
 
   const originalName = file.name || `${fileType}-${Date.now()}`;
-  const filePath = `${ticketId}/${Date.now()}-${safeFileName(originalName)}`;
+  // A random component, not just Date.now() - two files uploaded together
+  // (the resolve form's "additional photos" go up concurrently via
+  // Promise.all) can compute the same millisecond, and two phones/exports
+  // sharing a filename like IMG_0001.jpg would otherwise collide on the
+  // exact same path and the second upload({upsert:false}) would fail.
+  const filePath = `${ticketId}/${Date.now()}-${Math.random().toString(16).slice(2, 8)}-${safeFileName(originalName)}`;
 
   try {
     const { error: uploadError } = await supabaseClient.storage
@@ -1719,7 +1742,12 @@ async function addProgressPhoto(event, ticketId) {
 
   try {
     const originalName = file.name || `photo-${Date.now()}`;
-    const filePath = `${ticketId}/${Date.now()}-${safeFileName(originalName)}`;
+    // A random component, not just Date.now() - two files uploaded together
+  // (the resolve form's "additional photos" go up concurrently via
+  // Promise.all) can compute the same millisecond, and two phones/exports
+  // sharing a filename like IMG_0001.jpg would otherwise collide on the
+  // exact same path and the second upload({upsert:false}) would fail.
+  const filePath = `${ticketId}/${Date.now()}-${Math.random().toString(16).slice(2, 8)}-${safeFileName(originalName)}`;
 
     const { error: uploadError } = await supabaseClient.storage
       .from("ticket-photos")
@@ -2158,7 +2186,14 @@ async function acknowledgeClientError(errorId) {
 
 // The last error message logged and when, so a tight failing loop reports
 // once instead of flooding the table with the same row hundreds of times.
-let lastLoggedError = { message: "", at: 0 };
+// Keyed by message, not a single last-seen slot - two distinct errors
+// alternating (A, B, A, B, ...) would never match "the previous one" with
+// only one slot, so a loop tripping two different failures kept writing
+// a row on every single occurrence instead of being throttled at all.
+// Capped so a script generating endless distinct messages cannot grow
+// this without bound.
+const loggedErrorTimestamps = new Map();
+const MAX_TRACKED_ERROR_MESSAGES = 50;
 
 // Fire-and-forget by design: reporting an error must never itself throw,
 // block the UI, or affect what the user was doing when it happened.
@@ -2170,17 +2205,26 @@ async function logClientError(message, stack) {
 
   const safeMessage = String(message || "Unknown error").slice(0, 2000);
   const now = Date.now();
-  if (safeMessage === lastLoggedError.message && now - lastLoggedError.at < 30000) {
+  const lastSeen = loggedErrorTimestamps.get(safeMessage);
+  if (lastSeen && now - lastSeen < 30000) {
     return;
   }
-  lastLoggedError = { message: safeMessage, at: now };
+  if (loggedErrorTimestamps.size >= MAX_TRACKED_ERROR_MESSAGES) {
+    loggedErrorTimestamps.clear();
+  }
+  loggedErrorTimestamps.set(safeMessage, now);
 
   try {
     await supabaseClient.from("client_error_logs").insert({
       profile_id: currentUser.id,
       message: safeMessage,
       stack: stack ? String(stack).slice(0, 8000) : null,
-      page_url: window.location.href.slice(0, 500),
+      // Deliberately excludes window.location.hash: a password-reset
+      // visit carries a live Supabase recovery access_token/refresh_token
+      // in the URL fragment (see resetPasswordPage()), and this table is
+      // admin-readable - logging the full href would persist a working
+      // auth credential into it if a JS error fired on that page.
+      page_url: (window.location.origin + window.location.pathname + window.location.search).slice(0, 500),
       user_agent: navigator.userAgent
     });
   } catch (err) {
@@ -2189,18 +2233,6 @@ async function logClientError(message, stack) {
     console.error("Failed to record client error", err);
   }
 }
-
-window.addEventListener("error", (event) => {
-  logClientError(event.error?.message || event.message, event.error?.stack);
-});
-
-window.addEventListener("unhandledrejection", (event) => {
-  const reason = event.reason;
-  logClientError(
-    reason instanceof Error ? reason.message : String(reason),
-    reason instanceof Error ? reason.stack : undefined
-  );
-});
 
 async function loadRealSupportData(options = {}) {
   const shouldRender = options?.shouldRender !== false;
@@ -2780,7 +2812,7 @@ function attachmentGallery(detail) {
   const attachments = detail?.attachments || [];
 
   if (!attachments.length) {
-    return `<p class="small muted">No photo, voice note or video was attached to this ticket.</p>`;
+    return `<p class="small muted">No photo was attached to this ticket.</p>`;
   }
 
   return `
@@ -2908,6 +2940,12 @@ function renderTicketDetail(ticket) {
   const assignedTechnicianId = detail?.ticket
     ? detail.ticket.assigned_technician_id
     : ticket.assignedTechnicianId;
+  // Same staleness concern as assignedTechnicianId above: if another staff
+  // member resolves or closes this ticket while this client's realtime
+  // subscription has silently dropped, ticket.status here would still read
+  // "in_progress" and keep offering the Add-photo form on a job that is
+  // actually already finished.
+  const ticketStatus = detail?.ticket ? detail.ticket.status : ticket.status;
   // Mirrors the "Staff update tickets" RLS policy exactly: an agent or admin
   // may edit any ticket, but a technician only one assigned to them — not
   // every ticket in the queue. Showing the edit form more broadly than the
@@ -2946,7 +2984,7 @@ function renderTicketDetail(ticket) {
   const description = detail?.ticket?.description || "";
   const callback = detail?.callback;
   const hasCoords = detail?.ticket?.location_lat != null && detail?.ticket?.location_lng != null;
-  const nextStatuses = allowedStatusTransitions(role, ticket.status);
+  const nextStatuses = allowedStatusTransitions(role, ticketStatus);
   const selectedTechnicianId = assignedTechnicianId || "";
 
   return `
@@ -2957,7 +2995,7 @@ function renderTicketDetail(ticket) {
             <h2>${safeTitle}</h2>
             <p class="muted">${safeNumber} · version ${Number(ticket.version)} · ${escapeHtml(relativeTime(ticket.createdAt))}</p>
           </div>
-          ${statusBadge(ticket.status)}
+          ${statusBadge(ticketStatus)}
         </div>
 
         ${
@@ -3029,7 +3067,7 @@ function renderTicketDetail(ticket) {
         ${ticketDetail.loading && !detail ? `<div class="loading-spinner">Loading attachments…</div>` : attachmentGallery(detail)}
 
         ${
-          canEditAsStaff && !["resolved", "closed"].includes(ticket.status)
+          canEditAsStaff && !["resolved", "closed"].includes(ticketStatus)
             ? `<form class="action-row" data-progress-photo-form="${safeTicketId}">
                  <label class="sr-only" for="progress-photo-${safeTicketId}">Add a photo</label>
                  <input id="progress-photo-${safeTicketId}" name="photo" type="file" accept="image/png,image/jpeg,image/webp" required />
@@ -3130,7 +3168,7 @@ function renderTicketDetail(ticket) {
                    .join("")}
                </div>
                <p class="small muted">The database checks the ticket version on every change, so two people cannot overwrite each other.</p>`
-            : `<p class="small muted">This ticket is ${escapeHtml(statusLabel(ticket.status))}. You cannot change it from here.</p>`
+            : `<p class="small muted">This ticket is ${escapeHtml(statusLabel(ticketStatus))}. You cannot change it from here.</p>`
         }
 
         ${
@@ -3873,6 +3911,17 @@ function render() {
   if (route === "reset-password") {
     app.innerHTML = resetPasswordPage();
     bindEvents();
+    // Supabase's client already consumed the recovery token from the URL
+    // fragment by this point (it processes the hash during client
+    // startup, well before this render happens); scrub it from the
+    // address bar and history now so a live access_token/refresh_token
+    // doesn't keep sitting there for the rest of this page visit (in
+    // browser history, and previously also in error logs - see
+    // logClientError()'s page_url handling). Guarded by the hash still
+    // being present so this runs once, not on every re-render.
+    if (window.location.hash) {
+      history.replaceState(null, "", window.location.pathname + window.location.search);
+    }
     return;
   }
 
@@ -4071,7 +4120,14 @@ function bindEvents() {
     button.onclick = () => {
       const ticketId = button.dataset.ticket;
       const status = button.dataset.status;
-      if (status === "resolved" && userRole() === "technician") {
+      // Was technician-only - an agent or admin resolving directly (from
+      // the Agent Desk, the CEO Console, or an admin "viewing as" another
+      // portal) bypassed this form entirely, so the ticket got marked
+      // Resolved with no service call number, notes or receipt on file
+      // and nothing on screen explained why. Only staff can even see a
+      // "Resolved" button in the first place (allowedStatusTransitions()
+      // never offers it to a customer), so no role check is needed here.
+      if (status === "resolved") {
         openResolveTicketModal(ticketId);
         return;
       }
@@ -4283,6 +4339,17 @@ let lastErrorAt = 0;
 
 function reportUnexpectedError(source, error) {
   console.error(`[ABSL] ${source}`, error);
+
+  // One entry point for both halves of "something broke": tell the admin
+  // console (logClientError, its own separate 30s-per-message dedup) and
+  // tell the person looking at the screen right now (the toast below,
+  // rate-limited separately). These used to be two independently
+  // registered window.addEventListener("error"/"unhandledrejection")
+  // pairs; merged into this single existing handler instead.
+  logClientError(
+    error instanceof Error ? error.message : String(error),
+    error instanceof Error ? error.stack : undefined
+  );
 
   // One message per five seconds; a render loop must not become a toast loop.
   const now = Date.now();

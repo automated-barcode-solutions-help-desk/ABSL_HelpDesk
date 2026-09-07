@@ -34,7 +34,10 @@ SELECT
   (SELECT count(*) FROM information_schema.columns
      WHERE table_name = 'ticket_receipts' AND column_name = 'service_call_number') AS m0010_receipt_service_call_column,
   (SELECT count(*) FROM information_schema.columns
-     WHERE table_name = 'ticket_receipts' AND column_name = 'receipt_photo_path')   AS m0010_receipt_photo_column;
+     WHERE table_name = 'ticket_receipts' AND column_name = 'receipt_photo_path')   AS m0010_receipt_photo_column,
+  (SELECT pg_get_functiondef('public.change_ticket_status'::regproc) NOT LIKE '%current_role() = ''technician''%') AS m0011_evidence_required_for_all_staff,
+  (SELECT pg_get_functiondef('public.add_progress_photo'::regproc) LIKE '%IS DISTINCT FROM%') AS m0012_progress_photo_null_fixed,
+  (SELECT pg_get_functiondef('public.report_search'::regproc) LIKE '%Asia/Colombo%') AS m0012_report_search_timezone_fixed;
 -- Expect: policies 30+, every other column 1, and all three m0006_* columns = true.
 -- Those have no separate object to count — 0006 only CREATE OR REPLACEs
 -- existing functions — so the live functions' own source is the only proof.
