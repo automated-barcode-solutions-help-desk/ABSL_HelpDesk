@@ -26,7 +26,11 @@ SELECT
   (SELECT count(*) FROM information_schema.columns
      WHERE table_name = 'tickets' AND column_name = 'service_call_number')     AS m0007_service_call_column,
   (SELECT pg_get_functiondef('public.change_ticket_status'::regproc) LIKE '%service call number is required%') AS m0007_resolve_requires_receipt,
-  (SELECT count(*) FROM information_schema.tables WHERE table_name = 'client_error_logs') AS m0008_client_error_log_table;
+  (SELECT count(*) FROM information_schema.tables WHERE table_name = 'client_error_logs') AS m0008_client_error_log_table,
+  (SELECT count(*) FROM information_schema.columns
+     WHERE table_name = 'tickets' AND column_name = 'resolution_notes')       AS m0009_resolution_notes_column,
+  (SELECT count(*) FROM pg_proc WHERE proname = 'add_progress_photo')          AS m0009_progress_photo_rpc,
+  (SELECT count(*) FROM pg_proc WHERE proname = 'report_search')              AS m0009_report_search_rpc;
 -- Expect: policies 30+, every other column 1, and all three m0006_* columns = true.
 -- Those have no separate object to count — 0006 only CREATE OR REPLACEs
 -- existing functions — so the live functions' own source is the only proof.
