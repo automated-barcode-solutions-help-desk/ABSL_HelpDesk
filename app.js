@@ -204,7 +204,7 @@ function showModal({ title, body, icon = "info", actions = [] }) {
 // for a document with real structure. A receipt gets its own layout, built
 // the same way as everything else: every dynamic value passed through
 // escapeHtml individually.
-function openReceiptModal(receiptId) {
+async function openReceiptModal(receiptId) {
   const receipt = state.receipts.find((item) => item.id === receiptId);
   const overlay = document.getElementById("modalOverlay");
   const card = document.getElementById("modalCard");
@@ -228,10 +228,22 @@ function openReceiptModal(receiptId) {
         <div><dt>Customer</dt><dd>${escapeHtml(receipt.customer_name || "—")}</dd></div>
         <div><dt>Technician</dt><dd>${escapeHtml(receipt.technician_name || "Unassigned")}</dd></div>
         <div><dt>Resolved by</dt><dd>${escapeHtml(receipt.agent_name || "—")}</dd></div>
+        ${
+          receipt.service_call_number
+            ? `<div><dt>Service call number</dt><dd class="mono">${escapeHtml(receipt.service_call_number)}</dd></div>`
+            : ""
+        }
       </dl>
       <hr />
       <p class="small muted" style="margin-bottom: 4px;">Problem</p>
       <p>${escapeHtml(receipt.title)}</p>
+      ${
+        receipt.resolution_notes
+          ? `<hr />
+             <p class="small muted" style="margin-bottom: 4px;">Resolution notes</p>
+             <p>${escapeHtml(receipt.resolution_notes)}</p>`
+          : ""
+      }
       ${
         parts.length
           ? `<hr />
@@ -246,6 +258,13 @@ function openReceiptModal(receiptId) {
              </ul>`
           : `<hr /><p class="small muted">No parts were recorded against this ticket.</p>`
       }
+      ${
+        receipt.receipt_photo_path
+          ? `<hr />
+             <p class="small muted" style="margin-bottom: 4px;">Service call receipt photo</p>
+             <div id="receiptPhotoHost" class="small muted">Loading photo…</div>`
+          : ""
+      }
       <div class="modal-actions">
         <button class="primary-button" type="button" data-close-modal>Close</button>
       </div>
@@ -257,6 +276,25 @@ function openReceiptModal(receiptId) {
   };
 
   overlay.classList.add("is-visible");
+
+  // The bucket is private, so the photo needs its own short-lived signed
+  // URL - fetched after the modal is already open rather than delaying it,
+  // same reasoning as loadTicketDetail()'s attachment signing.
+  if (receipt.receipt_photo_path && receipt.receipt_photo_bucket && supabaseClient) {
+    const { data: signed, error } = await supabaseClient.storage
+      .from(receipt.receipt_photo_bucket)
+      .createSignedUrl(receipt.receipt_photo_path, 60 * 60);
+
+    const host = card.querySelector("#receiptPhotoHost");
+    if (host) {
+      if (error || !signed?.signedUrl) {
+        host.textContent = "This file could not be opened.";
+      } else {
+        const safeUrl = escapeHtml(signed.signedUrl);
+        host.outerHTML = `<a href="${safeUrl}" target="_blank" rel="noopener noreferrer"><img src="${safeUrl}" alt="Service call receipt photo" style="max-width:100%;border-radius:8px;" /></a>`;
+      }
+    }
+  }
 }
 
 // A technician resolving a job must show proof of the work: the service
@@ -3572,6 +3610,7 @@ function receiptRowHtml(receipt) {
     <div class="inventory-row">
       <div>
         <strong class="mono">${escapeHtml(receipt.receipt_number)}</strong>
+        ${receipt.service_call_number ? `<span class="badge badge-ok mono">${escapeHtml(receipt.service_call_number)}</span>` : ""}
         <p class="small muted">
           ${escapeHtml(receipt.ticket_number)} · ${escapeHtml(receipt.customer_name || "—")}
           ${receipt.company_name ? ` · ${escapeHtml(receipt.company_name)}` : ""}
