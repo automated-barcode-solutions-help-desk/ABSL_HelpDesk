@@ -1787,6 +1787,47 @@ async function addProgressPhoto(event, ticketId) {
   }
 }
 
+// Frees the storage space a photo/voice/video attachment was using, not
+// just the database row - the two are deleted together so nothing is left
+// as an orphaned file nobody can find or clean up later. The RLS policies
+// backing both deletes (0013) already refuse this for a service call
+// receipt regardless of what the UI offers; attachmentGallery() also
+// never renders the button for one.
+async function deleteAttachment(attachmentId, bucketName, filePath, ticketId) {
+  if (!supabaseClient || !isUuid(attachmentId)) return;
+
+  const confirmed = await showConfirm(
+    "Delete this file? This cannot be undone.",
+    "Delete Attachment"
+  );
+  if (!confirmed) return;
+
+  isDataLoading = true;
+  render();
+
+  try {
+    const deletedRow = await removeRecord("ticket_attachments", attachmentId);
+    if (!deletedRow) return; // removeRecord() already toasted the error
+
+    const { error: storageError } = await supabaseClient.storage.from(bucketName).remove([filePath]);
+    if (storageError) {
+      // The reference is already gone (freeing the database side, and the
+      // customer/staff no longer see it) even if the file itself could
+      // not be removed - not worth blocking on or rolling back for.
+      console.error("Attachment row deleted but storage file remove failed", storageError);
+    }
+
+    await loadTicketDetail(ticketId);
+    render();
+    showToast("Attachment deleted.", "success");
+  } catch (err) {
+    showToast(friendlyError(err), "error");
+  } finally {
+    isDataLoading = false;
+    render();
+  }
+}
+
 async function deleteComment(commentId) {
   const comment = state.comments.find((item) => item.id === commentId);
   if (!comment) return;
@@ -2667,6 +2708,14 @@ function reportsPage() {
     </div>
     <br />
     <div class="panel">
+      <div class="panel-title">
+        <h2>Results</h2>
+        ${
+          reportResults.length
+            ? `<button class="secondary-button" type="button" id="exportReportsBtn">Export to spreadsheet</button>`
+            : ""
+        }
+      </div>
       ${reportResultsHtml()}
     </div>
   `;
@@ -2702,6 +2751,11 @@ function reportResultsHtml() {
               ${escapeHtml(row.customer_name || row.customer_email || "Unknown customer")}${row.company_name ? ` · ${escapeHtml(row.company_name)}` : ""}
             </p>
             <p class="small muted">${escapeHtml(relativeTime(row.created_at))}</p>
+            ${
+              row.resolution_notes
+                ? `<button class="link-button" type="button" data-view-report="${escapeHtml(row.id)}">Click here to view technician message</button>`
+                : ""
+            }
           </div>
           <div class="ticket-card-actions">
             <button class="secondary-button" type="button" data-view-report="${escapeHtml(row.id)}">View Summary</button>
@@ -2712,6 +2766,71 @@ function reportResultsHtml() {
         .join("")}
     </div>
   `;
+}
+
+/** Wraps a value for one CSV field: quoted, with internal quotes doubled,
+ *  whenever it contains a comma, quote or newline - the one escaping rule
+ *  every spreadsheet app (Excel, Google Sheets, LibreOffice) agrees on. */
+function csvField(value) {
+  const text = String(value ?? "");
+  if (/[",\n]/.test(text)) {
+    return `"${text.replace(/"/g, '""')}"`;
+  }
+  return text;
+}
+
+// CSV rather than a real .xlsx: it opens correctly in both Google Sheets
+// and Excel with no extra library, no CDN script, and no new dependency
+// in a project that has deliberately carried none beyond supabase-js.
+function exportReportsToCsv() {
+  if (!reportResults.length) return;
+
+  const headers = [
+    "Ticket Number",
+    "Status",
+    "Service Call Number",
+    "Customer",
+    "Customer Email",
+    "Company",
+    "Technician",
+    "Reported",
+    "Resolved",
+    "Reported Fault",
+    "Technician Message"
+  ];
+
+  const rows = reportResults.map((row) => [
+    row.ticket_number,
+    statusLabel(row.status),
+    row.service_call_number || "",
+    row.customer_name || "",
+    row.customer_email || "",
+    row.company_name || "",
+    row.technician_name || "",
+    formatDateTime(row.created_at),
+    row.resolved_at ? formatDateTime(row.resolved_at) : "",
+    row.description || row.title || "",
+    row.resolution_notes || ""
+  ]);
+
+  // A UTF-8 byte-order mark, so Excel opens the file as UTF-8 instead of
+  // guessing the system codepage and mangling non-ASCII names.
+  const bom = String.fromCharCode(0xfeff);
+  const csv =
+    bom +
+    [headers, ...rows]
+      .map((line) => line.map(csvField).join(","))
+      .join("\r\n");
+
+  const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = `absl-service-reports-${new Date().toISOString().slice(0, 10)}.csv`;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
 }
 
 async function searchReports(event) {
@@ -2821,11 +2940,27 @@ function attachmentGallery(detail) {
         .map((attachment) => {
           const name = escapeHtml(attachment.original_name || attachment.file_path.split("/").pop());
           const size = attachment.file_size ? ` · ${formatBytes(attachment.file_size)}` : "";
+          // The service call receipt is the required evidence behind a
+          // resolution (and, once resolved, behind an already-generated
+          // Resolution Receipt that copied its file path) - never
+          // offered for deletion, matching the RLS policy that backs
+          // this up server-side regardless of what the UI offers.
+          const canDelete =
+            attachment.file_type !== "service_receipt" &&
+            (attachment.uploaded_by === currentProfile?.id || userRole() === "admin");
+          const deleteButton = canDelete
+            ? `<button class="danger-button compact-button" type="button"
+                 data-delete-attachment="${escapeHtml(attachment.id)}"
+                 data-attachment-bucket="${escapeHtml(attachment.bucket_name)}"
+                 data-attachment-path="${escapeHtml(attachment.file_path)}"
+                 data-attachment-ticket="${escapeHtml(detail?.ticket?.id || "")}">Delete</button>`
+            : "";
 
           if (!attachment.url) {
             return `<div class="attachment attachment-broken">
                       <strong>${name}</strong>
                       <span class="small muted">This file could not be opened.</span>
+                      ${deleteButton}
                     </div>`;
           }
 
@@ -2834,6 +2969,7 @@ function attachmentGallery(detail) {
                       <strong>🎙 Voice note</strong>
                       <audio controls preload="none" src="${escapeHtml(attachment.url)}"></audio>
                       <span class="small muted">${name}${size}</span>
+                      ${deleteButton}
                     </div>`;
           }
 
@@ -2842,6 +2978,7 @@ function attachmentGallery(detail) {
                       <strong>🎬 Video clip</strong>
                       <video controls preload="metadata" src="${escapeHtml(attachment.url)}"></video>
                       <span class="small muted">${name}${size}</span>
+                      ${deleteButton}
                     </div>`;
           }
 
@@ -2859,6 +2996,7 @@ function attachmentGallery(detail) {
                       <img src="${escapeHtml(attachment.url)}" alt="Photo attached to this ticket: ${name}" loading="lazy" />
                     </a>
                     <figcaption class="small muted">${name}${size}</figcaption>
+                    ${deleteButton}
                   </figure>`;
         })
         .join("")}
@@ -4268,8 +4406,21 @@ function bindEvents() {
     form.onsubmit = (event) => addProgressPhoto(event, form.dataset.progressPhotoForm);
   });
 
+  document.querySelectorAll("[data-delete-attachment]").forEach((button) => {
+    button.onclick = () =>
+      deleteAttachment(
+        button.dataset.deleteAttachment,
+        button.dataset.attachmentBucket,
+        button.dataset.attachmentPath,
+        button.dataset.attachmentTicket
+      );
+  });
+
   const reportSearchForm = document.querySelector("#reportSearchForm");
   if (reportSearchForm) reportSearchForm.onsubmit = searchReports;
+
+  const exportReportsBtn = document.querySelector("#exportReportsBtn");
+  if (exportReportsBtn) exportReportsBtn.onclick = exportReportsToCsv;
 
   document.querySelectorAll("[data-view-report]").forEach((button) => {
     button.onclick = () => openReportSummaryModal(button.dataset.viewReport);
