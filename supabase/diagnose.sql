@@ -39,7 +39,8 @@ SELECT
   (SELECT pg_get_functiondef('public.add_progress_photo'::regproc) LIKE '%IS DISTINCT FROM%') AS m0012_progress_photo_null_fixed,
   (SELECT pg_get_functiondef('public.report_search'::regproc) LIKE '%Asia/Colombo%') AS m0012_report_search_timezone_fixed,
   (SELECT count(*) FROM pg_policies
-     WHERE tablename = 'ticket_attachments' AND policyname = 'Uploader or admin deletes attachment') AS m0013_attachment_delete_policy;
+     WHERE tablename = 'ticket_attachments' AND policyname = 'Uploader or admin deletes attachment') AS m0013_attachment_delete_policy,
+  (SELECT pg_get_functiondef('public.queue_ticket_notification'::regproc) LIKE '%What we did%') AS m0014_resolved_email_enriched;
 -- Expect: policies 30+, every other column 1, and all three m0006_* columns = true.
 -- Those have no separate object to count — 0006 only CREATE OR REPLACEs
 -- existing functions — so the live functions' own source is the only proof.

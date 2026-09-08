@@ -164,7 +164,7 @@ passwords. Build a clean publish folder instead:
 npm run build
 ```
 
-That writes `dist/` — 16 files, nothing else — and refuses to finish if
+That writes `dist/` — nothing else — and refuses to finish if
 anything sensitive has crept in. Deploy `dist/`, not the repository.
 
 Netlify, Vercel and Cloudflare Pages all work; `netlify.toml`, `vercel.json`
