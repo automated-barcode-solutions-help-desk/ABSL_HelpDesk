@@ -1454,18 +1454,9 @@ async function uploadAttachment(ticketId, file, bucketName, fileType) {
 async function createTicket(event) {
   event.preventDefault();
   const data = new FormData(event.target);
-  const photoFile = data.get("photo");
   const wantsCallback = data.get("callback") === "on";
   const callbackPhone = String(data.get("callbackPhone") || "").trim();
   const siteContactPhone = String(data.get("siteContactPhone") || "").trim();
-
-  // Check the photo before creating anything, so a rejected file does not
-  // leave a ticket with no evidence attached at all.
-  const photoCheck = validateUpload(photoFile, "photo");
-  if (!photoCheck.ok) {
-    showToast(photoCheck.message, "warning");
-    return;
-  }
 
   if (wantsCallback && !isValidPhone(callbackPhone)) {
     showToast("Add a phone number we can call you on, for example 0771234567.", "warning");
@@ -1510,46 +1501,6 @@ async function createTicket(event) {
 
       ticket.id = realTicket.id;
       ticket.number = realTicket.ticket_number;
-
-      const uploads = [{ file: photoFile, bucket: "ticket-photos", kind: "photo" }].filter(
-        (upload) => upload.file && upload.file.size > 0
-      );
-
-      const results = await Promise.all(
-        uploads.map(async (upload) => ({
-          upload,
-          path: await uploadAttachment(realTicket.id, upload.file, upload.bucket, upload.kind)
-        }))
-      );
-      const failed = results.filter((result) => !result.path).map((result) => result.upload);
-
-      if (failed.length) {
-        const retry = await showModal({
-          title: "Attachment Upload Failed",
-          body: `The ticket was successfully created, but ${failed.length === 1 ? "an attachment" : "some attachments"} failed to upload. Check your connection and try again.`,
-          icon: "warning",
-          actions: [
-            { label: "Skip", value: false, primary: false },
-            { label: "Retry Upload", value: true, primary: true }
-          ]
-        });
-
-        if (retry) {
-          const retryResults = await Promise.all(
-            failed.map(async (upload) => ({
-              upload,
-              path: await uploadAttachment(realTicket.id, upload.file, upload.bucket, upload.kind)
-            }))
-          );
-          const stillFailed = retryResults.filter((result) => !result.path);
-          // uploadAttachment() already toasts its own error per file on
-          // failure — only claim success here if the retry actually cleared
-          // every failure, instead of announcing it unconditionally.
-          if (!stillFailed.length) {
-            showToast("Attachments uploaded successfully.", "success");
-          }
-        }
-      }
 
       // Diagram 6: the callback goes into a real queue an agent works from,
       // not just a checkbox on the ticket.
@@ -3515,7 +3466,6 @@ function customerView() {
       <div class="panel">
         <div class="panel-title">
           <h2>Create New Ticket</h2>
-          <span class="badge badge-muted">Photo ready</span>
         </div>
         <form id="newTicketForm">
           <!-- Name and company come from the signed-in account. They used to be
@@ -3542,11 +3492,6 @@ function customerView() {
             <textarea id="description" name="description" rows="4" maxlength="5000"
                       placeholder="When did it start, what have you already tried, is the machine still usable?"></textarea>
             <span class="small muted">Optional, but it usually saves a phone call.</span>
-          </div>
-          <div class="field">
-            <label for="photo">Photo</label>
-            <input id="photo" name="photo" type="file" accept="image/png,image/jpeg,image/webp" />
-            <span class="small muted">JPG, PNG or WebP, up to 8 MB.</span>
           </div>
           <div class="form-grid">
             <div class="field">
@@ -4015,7 +3960,7 @@ function render() {
   const views = {
     customer: {
       title: portals.customer.name,
-      description: "Create support tickets, attach photos, request callback support, and follow updates.",
+      description: "Create support tickets, request callback support, and follow updates.",
       render: customerView
     },
     agent: {
