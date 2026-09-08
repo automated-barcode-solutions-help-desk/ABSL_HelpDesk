@@ -3408,7 +3408,7 @@ function customerView() {
           <div class="field">
             <label for="photo">Photo</label>
             <input id="photo" name="photo" type="file" accept="image/png,image/jpeg,image/webp" />
-            <span class="small muted">JPG, PNG or WebP, up to 8 MB. Need to share more photos, a video, or extra detail? Tick "Need phone callback?" below and an agent will call you.</span>
+            <span class="small muted">JPG, PNG or WebP, up to 8 MB.</span>
           </div>
           <div class="form-grid">
             <div class="field">
