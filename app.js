@@ -3881,7 +3881,8 @@ function adminView() {
   return `
     ${renderStats()}
     <br />
-    <div class="action-row" style="margin-bottom: 20px;">
+    <div class="action-row" style="margin-bottom: 20px; align-items: center;">
+      <span class="small muted">Click here to view service reports — searchable by customer, service call number, or date, with each job's full summary.</span>
       <a class="secondary-button" href="reports.html">Reports</a>
     </div>
     <section class="dashboard-grid">
