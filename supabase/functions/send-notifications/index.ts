@@ -5,7 +5,8 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
 const serviceRoleKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
 const resendApiKey = Deno.env.get("RESEND_API_KEY")!;
-const fromEmail = Deno.env.get("FROM_EMAIL") || "helpdesk@automatedbarcode.net";
+const fromEmail = Deno.env.get("FROM_EMAIL") || "ABSL Helpdesk <no-reply@mail.automatedbarcode.net>";
+const portalUrl = Deno.env.get("PORTAL_URL") || "http://helpdesk.automatedbarcode.net";
 
 // Optional shared secret. When set, the cron job must send it as
 //   x-worker-secret: <value>
@@ -38,14 +39,62 @@ interface AdminAlert {
   created_at: string;
 }
 
+// The notification body is never hand-written markup - it's a technician's
+// resolution notes, a rejection reason, a caller's name, straight from a
+// database column a user typed into. Interpolating that raw into an HTML
+// email would let a literal "<" in someone's own text break the layout, or
+// worse, render as a tag/link the sender never intended. escapeHtml() is
+// the exact same reasoning app.js already applies everywhere it puts user
+// content into the DOM.
+function escapeHtml(value: string): string {
+  return value.replace(/[&<>"']/g, (char) => {
+    const map: Record<string, string> = {
+      "&": "&amp;",
+      "<": "&lt;",
+      ">": "&gt;",
+      '"': "&quot;",
+      "'": "&#039;"
+    };
+    return map[char];
+  });
+}
+
 async function sendEmail(to: string, subject: string, text: string) {
+  const formattedHtml = `
+    <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #e2e8f0; border-radius: 8px; background-color: #ffffff;">
+      <div style="border-bottom: 2px solid #2563eb; padding-bottom: 12px; margin-bottom: 20px;">
+        <h2 style="color: #1e293b; margin: 0; font-size: 20px;">ABSL Helpdesk Notification</h2>
+        <span style="color: #64748b; font-size: 13px;">Automated Barcode Solutions Pvt Ltd</span>
+      </div>
+      <div style="color: #334155; font-size: 15px; line-height: 1.6; white-space: pre-line; margin-bottom: 24px;">
+        ${escapeHtml(text)}
+      </div>
+      <div style="margin-top: 24px; padding-top: 16px; border-top: 1px solid #f1f5f9; text-align: center;">
+        <a href="${portalUrl}" style="display: inline-block; background-color: #2563eb; color: #ffffff; text-decoration: none; padding: 10px 22px; border-radius: 6px; font-weight: bold; font-size: 14px;">
+          Open ABSL Helpdesk Portal
+        </a>
+        <p style="margin-top: 14px; font-size: 12px; color: #94a3b8;">
+          Visit: <a href="${portalUrl}" style="color: #2563eb;">${portalUrl}</a>
+        </p>
+      </div>
+    </div>
+  `;
+
+  const fullText = `${text}\n\n---\nAccess the portal: ${portalUrl}`;
+
   const response = await fetch("https://api.resend.com/emails", {
     method: "POST",
     headers: {
       Authorization: `Bearer ${resendApiKey}`,
       "Content-Type": "application/json"
     },
-    body: JSON.stringify({ from: fromEmail, to, subject, text })
+    body: JSON.stringify({
+      from: fromEmail,
+      to,
+      subject,
+      text: fullText,
+      html: formattedHtml
+    })
   });
 
   if (!response.ok) {

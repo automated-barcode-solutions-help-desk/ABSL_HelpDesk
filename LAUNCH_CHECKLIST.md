@@ -140,7 +140,7 @@ Authentication → Settings → SMTP Settings → **Enable Custom SMTP**:
 
 | Field | Value |
 |---|---|
-| Sender email | `helpdesk@automatedbarcode.net` |
+| Sender email | `no-reply@mail.automatedbarcode.net` |
 | Sender name | `ABSL Helpdesk` |
 | Host | `smtp.resend.com` |
 | Port | `465` |
@@ -184,7 +184,7 @@ supabase secrets set RESEND_API_KEY=your_resend_key
 ```
 
 ```bash
-supabase secrets set FROM_EMAIL=helpdesk@automatedbarcode.net
+supabase secrets set FROM_EMAIL="ABSL Helpdesk <no-reply@mail.automatedbarcode.net>"
 ```
 
 ```bash
@@ -195,8 +195,14 @@ supabase secrets set WORKER_SECRET=$(openssl rand -hex 24)
 supabase functions deploy send-notifications
 ```
 
-**Verify the sending domain in Resend first.** If `automatedbarcode.net` is
-not verified, every email fails and every ticket dead-letters on day one.
+**Verify the sending domain in Resend first.** If `mail.automatedbarcode.net`
+is not verified, every email fails and every ticket dead-letters on day one.
+Use a dedicated subdomain for this, never the bare `automatedbarcode.net` -
+the root domain already carries the company's real email (Google/Microsoft),
+and adding Resend's SPF there risks breaking it or exceeding the 10-lookup
+limit. `helpdesk.automatedbarcode.net` is already spoken for too - it points
+at the deployed app (Vercel), and a hosting CNAME cannot share a subdomain
+with the MX/TXT records email needs.
 
 Schedule the function every 5 minutes (Database → Cron, or any external
 scheduler) sending the header `x-worker-secret: <the value you set>`.
