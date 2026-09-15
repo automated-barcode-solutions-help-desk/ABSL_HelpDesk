@@ -222,13 +222,128 @@ Do these on the **deployed** site, not localhost.
 - [ ] **50.** Sign out, then DevTools → Application → Local Storage.
       → No ticket titles, customer names or comment text left behind. 🔒
 
+## Part 9 — Service call evidence, reports and staff-review emails
+
+Everything below was added after the original nineteen diagrams. Needs
+migrations 0007–0016 applied — run `supabase/diagnose.sql` and check every
+`m0007`–`m0016` column reads `1`/`true` first.
+
+- [ ] **51.** As Technician, open a job assigned to you and press **Resolved**
+      without filling in the service call number or choosing a photo.
+      → The form refuses to submit until both are provided — no way to mark
+      the job resolved without them.
+- [ ] **52.** As Admin, resolve a *different* ticket directly from the **Agent
+      Desk** (not the Technician Field App).
+      → The same evidence form appears. Service call number and photo are
+      required for **every** role that resolves a ticket, not technicians only.
+- [ ] **53.** As Customer, open the ticket resolved in test 52.
+      → The service call number and the technician's resolution notes are
+      both shown in plain text on your copy of the ticket.
+- [ ] **54.** As Admin → **CEO Console** → **Receipts**, open the receipt for
+      that same ticket.
+      → Shows the service call number and resolution notes, and the receipt
+      photo itself opens full size.
+- [ ] **55.** As Customer, start a new ticket.
+      → No **Photo** upload field on the create-ticket form. Voice note and
+      location capture are still there.
+- [ ] **56.** On a resolved ticket, as the technician who resolved it or as
+      Admin, look for a Delete button on the service call receipt photo.
+      → None offered anywhere in the UI — the required evidence can never be
+      deleted once submitted. 🔒
+- [ ] **57.** As the uploader of an ordinary photo (not the receipt), press
+      **Delete** on it.
+      → Removed immediately — gone from the gallery on a refresh.
+- [ ] **58.** As Admin → **CEO Console** → **User Approvals**, reject one
+      pending registration with a reason typed in, then approve a different one.
+      → The rejected applicant's inbox gets an email with that reason; the
+      approved applicant's inbox gets "approved, log in" instead.
+- [ ] **59.** As Agent/Admin → **Reports**, search with **Status** set to
+      *Resolved* and **Priority** set to *High*, nothing else filled in.
+      → Only High-priority Resolved tickets are listed — the two filters
+      narrow the result together, not separately.
+- [ ] **60.** Still on Reports, also set **Technician** to one specific name
+      and search again.
+      → The list narrows further to only that technician's tickets.
+- [ ] **61.** Click **View Summary** on a result that has files attached.
+      → The summary shows the service call number, and below it every
+      attached file — including the service call receipt photo — without
+      leaving the Reports page.
+- [ ] **62.** Export the current Reports results (**Export to spreadsheet**)
+      and open the file.
+      → Columns include **Priority** and an attachment count next to
+      **Service Call Number**.
+
+## Part 10 — Logging a call-in job
+
+A ticket used to only exist if a customer raised it through the portal. Needs
+migration 0017 applied.
+
+- [ ] **63.** As Technician (or Agent), press **📞 Log a Call-In Job**. Type an
+      existing company name (e.g. **Cargills Food City TEST**), a made-up
+      caller name and phone, and a problem, then submit.
+      → A real ticket number is issued. Its detail panel shows **Caller**
+      with that name/phone, and **Logged by** with your own name.
+- [ ] **64.** Check the inbox that belongs to the staff member who just logged
+      it.
+      → No "Ticket created" email arrives for them — logging a job on
+      someone else's behalf never self-notifies the logger.
+- [ ] **65.** Claim or assign that job to a technician and resolve it with a
+      service call number and receipt photo, same as any other ticket.
+      → Resolves normally. On **Reports**, it appears exactly like a
+      customer-raised job, with the caller's name/phone shown alongside who
+      logged it.
+- [ ] **66.** Type a brand-new company name (not already in the list) into
+      the Log a Call-In Job form and submit.
+      → Succeeds, and that company now exists for real — visible under
+      Admin → **Company Limit**.
+
+## Part 11 — Job type
+
+Needs migration 0018 applied.
+
+- [ ] **67.** As Customer, start a new ticket and try to submit without
+      touching the **Job Type** field.
+      → Refused before it reaches the database — "Choose one…" is a
+      placeholder, not a real option.
+- [ ] **68.** Submit choosing **Installation**.
+      → The ticket card and detail panel both show an **Installation**
+      badge/fact alongside the usual status and priority.
+- [ ] **69.** As Agent/Admin → **Reports**, filter by **Job Type = Service**
+      together with any other filter.
+      → Only Service jobs matching the rest of the filters are listed, and
+      the exported spreadsheet includes a Job Type column.
+
+## Part 12 — Production hardening
+
+A full audit pass over everything above found and fixed three more defects.
+Needs migration 0019 applied.
+
+- [ ] **70.** Run `supabase/diagnose.sql` section 5 ("Duplicate function
+      overloads").
+      → No rows returned. A row here means a migration changed a
+      function's arguments without dropping the old version first — a
+      real bug, not something to interpret away.
+- [ ] **71.** As Technician, open the resolve form on an assigned job,
+      select a receipt photo, then — before submitting — have another
+      window change that same ticket's status first. Submit anyway and
+      choose **Keep their change** on the conflict prompt.
+      → The photo you selected does not linger as a "receipt" on that
+      ticket. Reopen the resolve form later and it still asks for a real
+      photo; it does not consider the job already evidenced.
+- [ ] **72.** As two different technicians (or two windows of the same
+      one), log a call-in job for a brand-new company name at the same
+      time, in different letter casing (e.g. "Test Co" and "test co").
+      → Only one company is created. The second attempt either reuses it
+      or gets a clear message that it already exists — never two
+      separate companies for the same name.
+
 ---
 
 ## Result
 
 ```
-Passed: ____ / 50       Date: __________       Tested by: __________
+Passed: ____ / 72       Date: __________       Tested by: __________
 ```
 
-🔒 marks a security check — **5, 6, 7, 31, 49, 50**. A failure in any of those
-stops the launch. Everything else is a defect to fix, not a gate.
+🔒 marks a security check — **5, 6, 7, 31, 49, 50, 56**. A failure in any of
+those stops the launch. Everything else is a defect to fix, not a gate.

@@ -41,7 +41,16 @@ SELECT
   (SELECT count(*) FROM pg_policies
      WHERE tablename = 'ticket_attachments' AND policyname = 'Uploader or admin deletes attachment') AS m0013_attachment_delete_policy,
   (SELECT pg_get_functiondef('public.queue_ticket_notification'::regproc) LIKE '%What we did%') AS m0014_resolved_email_enriched,
-  (SELECT pg_get_functiondef('public.admin_review_registration'::regproc) LIKE '%has been approved%') AS m0015_registration_decision_email;
+  (SELECT pg_get_functiondef('public.admin_review_registration'::regproc) LIKE '%has been approved%') AS m0015_registration_decision_email,
+  (SELECT pg_get_functiondef('public.report_search'::regproc) LIKE '%p_technician_id%') AS m0016_report_filters_extended,
+  (SELECT count(*) FROM information_schema.columns
+     WHERE table_name = 'tickets' AND column_name = 'caller_name')          AS m0017_caller_columns,
+  (SELECT count(*) FROM pg_proc WHERE proname = 'staff_log_ticket')          AS m0017_staff_log_ticket_rpc,
+  (SELECT count(*) FROM information_schema.columns
+     WHERE table_name = 'tickets' AND column_name = 'job_type')             AS m0018_job_type_column,
+  (SELECT pg_get_functiondef('public.report_search'::regproc) LIKE '%p_job_type%') AS m0018_report_search_job_type,
+  (SELECT count(*) FROM pg_proc WHERE proname = 'discard_orphaned_receipt_attachment') AS m0019_discard_receipt_rpc,
+  (SELECT count(*) FROM pg_indexes WHERE indexname = 'companies_name_lower_key') AS m0019_company_name_ci_index;
 -- Expect: policies 30+, every other column 1, and all three m0006_* columns = true.
 -- Those have no separate object to count — 0006 only CREATE OR REPLACEs
 -- existing functions — so the live functions' own source is the only proof.
@@ -97,3 +106,23 @@ GROUP BY status
 ORDER BY status;
 -- Anything sitting in 'dead_letter' means the worker gave up. Usually the
 -- sending domain is not verified in Resend.
+
+
+-- 5. Duplicate function overloads ----------------------------------------
+-- PostgreSQL identifies a function by name + argument types, not name
+-- alone. A migration that changes a function's arguments without first
+-- dropping the old signature leaves both versions callable side by side -
+-- confusing, and it breaks the ::regproc casts section 1 above relies on
+-- (they error with "more than one function named ..." once this happens).
+-- Every row here must show count = 1. More than one means a migration
+-- needs a DROP FUNCTION IF EXISTS added for that old signature - see how
+-- 0007/0009 (change_ticket_status) and 0016/0017/0018 (report_search,
+-- staff_log_ticket) already do this.
+SELECT proname, count(*) AS overload_count
+FROM pg_proc
+WHERE pronamespace = 'public'::regnamespace
+  AND proname IN ('report_search', 'staff_log_ticket', 'change_ticket_status', 'admin_review_registration', 'reassign_ticket', 'add_progress_photo')
+GROUP BY proname
+HAVING count(*) > 1;
+-- Expect: no rows. Any row returned here is a real bug to fix, not
+-- something to interpret.

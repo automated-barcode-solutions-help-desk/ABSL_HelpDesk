@@ -52,6 +52,14 @@ test("statusLabel covers every enum value in the database", () => {
   assert.equal(h.statusLabel("closed"), "Closed");
 });
 
+test("jobTypeLabel covers every allowed value and defaults to Fault", () => {
+  assert.equal(h.jobTypeLabel("service"), "Service");
+  assert.equal(h.jobTypeLabel("fault"), "Fault");
+  assert.equal(h.jobTypeLabel("installation"), "Installation");
+  assert.equal(h.jobTypeLabel("nonsense"), "Fault");
+  assert.equal(h.jobTypeLabel(undefined), "Fault");
+});
+
 test("a customer may only close their own ticket", () => {
   assert.deepEqual(h.allowedStatusTransitions("customer", "new"), ["closed"]);
   assert.deepEqual(h.allowedStatusTransitions("customer", "closed"), []);
@@ -202,6 +210,11 @@ test("friendlyError rewrites the errors a customer can actually hit", () => {
   assert.match(h.friendlyError("new row violates row-level security policy"), /permission/);
   assert.match(h.friendlyError("Company account limit reached."), /raise the limit/);
   assert.match(h.friendlyError("TypeError: Failed to fetch"), /connection/);
+  assert.match(
+    h.friendlyError('duplicate key value violates unique constraint "companies_name_lower_key"'),
+    /company already exists/
+  );
+  assert.match(h.friendlyError("duplicate key value violates unique constraint \"users_email_key\""), /account already exists/);
 });
 
 test("friendlyError passes an unknown message through rather than hiding it", () => {

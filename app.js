@@ -34,7 +34,7 @@ const portals = {
     name: "Technician Field App",
     tagline: "Your assigned jobs and the parts you use",
     accent: "technician",
-    loads: ["tickets", "comments", "inventory", "technicians", "staff"]
+    loads: ["tickets", "comments", "inventory", "technicians", "staff", "companies"]
   },
   admin: {
     name: "CEO Console",
@@ -394,8 +394,8 @@ function openResolveTicketModal(ticketId) {
     // The receipt has to exist in the database before the status RPC will
     // accept the resolution - change_ticket_status() checks for the row,
     // not just that this form was filled in.
-    const path = await uploadAttachment(ticketId, receiptPhoto, "ticket-service-receipts", "service_receipt");
-    if (!path) {
+    const receiptUpload = await uploadAttachment(ticketId, receiptPhoto, "ticket-service-receipts", "service_receipt");
+    if (!receiptUpload) {
       if (submitBtn) submitBtn.disabled = false;
       return; // uploadAttachment() already toasted the specific error
     }
@@ -410,7 +410,163 @@ function openResolveTicketModal(ticketId) {
     }
 
     overlay.classList.remove("is-visible");
-    await updateTicketStatus(ticketId, "resolved", serviceCallNumber, resolutionNotes);
+    const resolved = await updateTicketStatus(ticketId, "resolved", serviceCallNumber, resolutionNotes);
+
+    // The receipt photo above had to go up before change_ticket_status()
+    // would even attempt the resolve - if that attempt then failed outright,
+    // or the user chose "Keep their change" on a version conflict instead of
+    // retrying, the ticket was never actually resolved but the photo is
+    // already sitting on it, satisfying a future resolve's evidence check
+    // with stale, unrelated proof. Not something the uploader can just
+    // delete themselves - service_receipt attachments are deliberately
+    // undeletable once a ticket really is resolved (0013) - so this needs
+    // its own RPC that only acts while the ticket is still not resolved.
+    if (!resolved) {
+      await discardOrphanedReceiptPhoto(receiptUpload);
+    }
+  };
+
+  overlay.classList.add("is-visible");
+}
+
+// Not every job starts with the customer using the portal - plenty come in
+// as a phone call, which used to leave no record in the system at all. This
+// is how an agent or technician logs one on the caller's behalf: from here
+// on it is an ordinary ticket, assignable and resolvable (service call
+// receipt included) exactly like any customer-raised one, and it shows up
+// in Reports the same way.
+function openLogTicketModal() {
+  const overlay = document.getElementById("modalOverlay");
+  const card = document.getElementById("modalCard");
+  if (!overlay || !card) return;
+
+  const companyOptions = (state.companies || [])
+    .map((company) => `<option value="${escapeHtml(company.name)}"></option>`)
+    .join("");
+
+  card.innerHTML = `
+    <h3>Log a Call-In Job</h3>
+    <p class="muted small">For a customer who went straight to the phone instead of the portal. This creates a normal ticket you can assign, work, and resolve like any other.</p>
+    <form id="logTicketForm">
+      <div class="field">
+        <label for="log-company">Company</label>
+        <input id="log-company" name="company" list="logTicketCompanies" required maxlength="200" placeholder="e.g. Cargills Food City" />
+        <datalist id="logTicketCompanies">${companyOptions}</datalist>
+        <span class="small muted">Type an existing company, or a new one — a new name is added automatically.</span>
+      </div>
+      <div class="field">
+        <label for="log-caller-name">Caller's name</label>
+        <input id="log-caller-name" name="callerName" required maxlength="200" placeholder="Who called in?" />
+      </div>
+      <div class="field">
+        <label for="log-caller-phone">Caller's phone</label>
+        <input id="log-caller-phone" name="callerPhone" type="tel" maxlength="20" placeholder="07X XXX XXXX" />
+      </div>
+      <div class="field">
+        <label for="log-job-type">Job Type</label>
+        <select id="log-job-type" name="jobType" required>
+          <option value="" disabled selected>Choose one…</option>
+          <option value="service">Service</option>
+          <option value="fault">Fault</option>
+          <option value="installation">Installation</option>
+        </select>
+      </div>
+      <div class="field">
+        <label for="log-title">Problem</label>
+        <input id="log-title" name="title" minlength="3" maxlength="200" required
+               placeholder="Example: scanner not reading barcodes" />
+      </div>
+      <div class="field">
+        <label for="log-description">What is happening?</label>
+        <textarea id="log-description" name="description" rows="4" maxlength="5000"
+                  placeholder="What did the caller describe?"></textarea>
+      </div>
+      <div class="field">
+        <label for="log-priority">Priority</label>
+        <select id="log-priority" name="priority">
+          <option>High</option>
+          <option selected>Medium</option>
+          <option>Low</option>
+        </select>
+      </div>
+      <div class="modal-actions">
+        <button class="secondary-button" type="button" data-close-modal>Cancel</button>
+        <button class="primary-button" type="submit">Log Job</button>
+      </div>
+    </form>
+  `;
+
+  card.querySelector("[data-close-modal]").onclick = () => {
+    overlay.classList.remove("is-visible");
+  };
+
+  card.querySelector("#logTicketForm").onsubmit = async (event) => {
+    event.preventDefault();
+    const form = new FormData(event.target);
+    const company = String(form.get("company") || "").trim();
+    const callerName = String(form.get("callerName") || "").trim();
+    const callerPhone = String(form.get("callerPhone") || "").trim();
+    const title = String(form.get("title") || "").trim();
+    const description = String(form.get("description") || "").trim();
+    const priority = normalizePriority(form.get("priority")).toLowerCase();
+    const jobType = String(form.get("jobType") || "");
+
+    if (!company) {
+      showToast("A company name is required.", "warning");
+      return;
+    }
+    if (!callerName) {
+      showToast("The caller's name is required.", "warning");
+      return;
+    }
+    if (callerPhone && !isValidPhone(callerPhone)) {
+      showToast("That phone number doesn't look right — try 0771234567.", "warning");
+      return;
+    }
+    if (!["service", "fault", "installation"].includes(jobType)) {
+      showToast("Choose a job type — Service, Fault or Installation.", "warning");
+      return;
+    }
+    if (title.length < 3) {
+      showToast("Enter what the problem is — at least 3 characters.", "warning");
+      return;
+    }
+
+    if (!supabaseClient) {
+      showToast("Supabase is not configured.", "warning");
+      return;
+    }
+
+    const submitBtn = card.querySelector("#logTicketForm button[type=submit]");
+    if (submitBtn) submitBtn.disabled = true;
+
+    try {
+      const { data, error } = await supabaseClient.rpc("staff_log_ticket", {
+        p_company_name: company,
+        p_caller_name: callerName,
+        p_caller_phone: callerPhone || null,
+        p_title: title,
+        p_description: description || null,
+        p_priority: priority,
+        p_job_type: jobType
+      });
+
+      if (error) {
+        showToast(friendlyError(error.message), "error");
+        if (submitBtn) submitBtn.disabled = false;
+        return;
+      }
+
+      overlay.classList.remove("is-visible");
+      showToast(`Job logged: ${data.ticket_number}`, "success");
+      state.selectedTicketId = data.id;
+      saveState();
+      await loadRealCompanies();
+      await loadRealTickets();
+    } catch (err) {
+      showToast(friendlyError(err), "error");
+      if (submitBtn) submitBtn.disabled = false;
+    }
   };
 
   overlay.classList.add("is-visible");
@@ -1035,9 +1191,13 @@ async function changeRealTicketStatus(ticketId, newStatus, expectedVersion, serv
   return { ok: true };
 }
 
+// Returns whether the ticket actually ended up at `status` as a result of
+// this call - a caller that uploaded evidence beforehand on the assumption
+// this would succeed (see openResolveTicketModal()) needs to know whether
+// to keep or discard that upload.
 async function updateTicketStatus(ticketId, status, serviceCallNumber = null, resolutionNotes = null) {
   const ticket = state.tickets.find((item) => item.id === ticketId);
-  if (!ticket) return;
+  if (!ticket) return false;
 
   if (supabaseClient && isUuid(ticket.id)) {
     const res = await changeRealTicketStatus(ticket.id, status, ticket.version, serviceCallNumber, resolutionNotes);
@@ -1069,18 +1229,22 @@ async function updateTicketStatus(ticketId, status, serviceCallNumber = null, re
           const retry = await changeRealTicketStatus(latest.id, status, latest.version, serviceCallNumber, resolutionNotes);
           if (!retry.ok) {
             showToast(friendlyError(retry.message), "error");
-            return;
+            return false;
           }
           await loadRealSupportData({ shouldRender: false });
           await loadTicketDetail(ticketId);
           render();
           showToast("Status updated.", "success");
+          return true;
         }
-        return;
+        // Either "Keep their change", or it already matches what we wanted
+        // (someone else beat us to the exact same status) - either way this
+        // call did not itself put the ticket into that status.
+        return false;
       }
 
       showToast(friendlyError(res.message), "error");
-      return;
+      return false;
     }
   }
 
@@ -1090,6 +1254,7 @@ async function updateTicketStatus(ticketId, status, serviceCallNumber = null, re
   await loadTicketDetail(ticketId);
   render();
   showToast("Status updated.", "success");
+  return true;
 }
 
 // Approval, and the role that comes with it, is decided entirely server-side
@@ -1384,6 +1549,7 @@ async function createRealTicket(ticket) {
     title: String(ticket.title || "").trim(),
     description: String(ticket.description || "").trim() || ticket.title,
     priority: normalizePriority(ticket.priority).toLowerCase(),
+    job_type: normalizeJobType(ticket.jobType),
     location_name: ticket.location,
     location_lat: Number.isFinite(lat) ? lat : null,
     location_lng: Number.isFinite(lng) ? lng : null,
@@ -1425,16 +1591,20 @@ async function uploadAttachment(ticketId, file, bucketName, fileType) {
       return null;
     }
 
-    const { error: dbError } = await supabaseClient.from("ticket_attachments").insert({
-      ticket_id: ticketId,
-      uploaded_by: profile.id,
-      bucket_name: bucketName,
-      file_path: filePath,
-      file_type: fileType,
-      file_size: file.size,
-      mime_type: file.type || null,
-      original_name: originalName
-    });
+    const { data: attachment, error: dbError } = await supabaseClient
+      .from("ticket_attachments")
+      .insert({
+        ticket_id: ticketId,
+        uploaded_by: profile.id,
+        bucket_name: bucketName,
+        file_path: filePath,
+        file_type: fileType,
+        file_size: file.size,
+        mime_type: file.type || null,
+        original_name: originalName
+      })
+      .select("id")
+      .single();
 
     if (dbError) {
       // The row is what makes the file findable; if it fails, take the
@@ -1444,7 +1614,10 @@ async function uploadAttachment(ticketId, file, bucketName, fileType) {
       return null;
     }
 
-    return filePath;
+    // Callers that might need to undo this upload later (a resolve whose
+    // status change is then abandoned - see openResolveTicketModal()) need
+    // the row's id, not just where the file landed.
+    return { id: attachment.id, path: filePath };
   } catch (err) {
     showToast(friendlyError(err), "error");
     return null;
@@ -1481,6 +1654,7 @@ async function createTicket(event) {
     company: data.get("company"),
     status: "new",
     priority: normalizePriority(data.get("priority")),
+    jobType: normalizeJobType(data.get("jobType")),
     location: data.get("location"),
     siteContactPhone,
     callback: data.get("callback") === "on",
@@ -1738,6 +1912,38 @@ async function addProgressPhoto(event, ticketId) {
   }
 }
 
+// A resolve's receipt photo has to be uploaded before change_ticket_status()
+// will even attempt the resolution (it checks the attachment already
+// exists) - so if that attempt then fails, or the user declines a version
+// conflict instead of retrying, the photo is left behind on a ticket that
+// was never actually resolved. It would otherwise sit there satisfying a
+// later, unrelated resolve's evidence requirement with stale proof.
+// discard_orphaned_receipt_attachment() only allows this while the ticket
+// genuinely is not resolved/closed yet - once real evidence backs a real
+// resolution, it goes back to being permanently undeletable, same as ever.
+// Best-effort and silent: this is cleanup, not something the technician
+// asked for or needs to see fail.
+async function discardOrphanedReceiptPhoto(upload) {
+  if (!supabaseClient || !upload?.id) return;
+
+  try {
+    const { error } = await supabaseClient.rpc("discard_orphaned_receipt_attachment", {
+      p_attachment_id: upload.id
+    });
+
+    if (error) {
+      console.error("Could not discard orphaned receipt photo", error);
+      return;
+    }
+
+    if (upload.path) {
+      await supabaseClient.storage.from("ticket-service-receipts").remove([upload.path]);
+    }
+  } catch (err) {
+    console.error("Could not discard orphaned receipt photo", err);
+  }
+}
+
 // Frees the storage space a photo/voice/video attachment was using, not
 // just the database row - the two are deleted together so nothing is left
 // as an orphaned file nobody can find or clean up later. The RLS policies
@@ -1812,13 +2018,23 @@ async function loadRealTickets(options = {}) {
   // Embed the creator and the company so the queue shows "Nimal — Cargills"
   // instead of the literal words "Customer" and "Company". RLS scopes both:
   // a customer only ever resolves their own name and company.
+  //
+  // The limit only ever matters for agent/admin (RLS lets them resolve
+  // every ticket in the system; a customer's own tickets are never close
+  // to this many) - and unlike Reports, which is explicit about its 500-row
+  // cap and expects a search to narrow it, this is the entire Ticket Queue
+  // and Tickets page with no such expectation. Past this many tickets
+  // system-wide, the oldest ones would silently stop appearing anywhere -
+  // 5000 pushes that boundary far out for this business's real scale, but
+  // it is still a boundary, not true pagination. Server-side paging is the
+  // real fix once ticket volume approaches it.
   const { data, error } = await supabaseClient
     .from("tickets")
     .select(
       "*, created_by_profile:profiles!tickets_created_by_fkey(full_name), company:companies(name)"
     )
     .order("created_at", { ascending: false })
-    .limit(500);
+    .limit(5000);
 
   if (error) {
     console.error(error);
@@ -1831,9 +2047,12 @@ async function loadRealTickets(options = {}) {
     number: ticket.ticket_number,
     title: ticket.title,
     customer: ticket.created_by_profile?.full_name || "Customer",
+    callerName: ticket.caller_name || "",
+    callerPhone: ticket.caller_phone || "",
     company: ticket.company?.name || "",
     status: ticket.status,
     priority: normalizePriority(ticket.priority),
+    jobType: ticket.job_type || "fault",
     location: ticket.location_name || "",
     callback: ticket.wants_callback,
     version: ticket.version,
@@ -2050,11 +2269,17 @@ async function loadRealCompanies() {
 async function loadRealNotifications() {
   if (!supabaseClient || userRole() !== "admin") return;
 
+  // notifications.html's "See all N" link renders this exact array, not a
+  // fresh fetch of its own - a cap here silently became the cap on what
+  // "See all" actually shows, even though its label promises the full
+  // list. 2000 covers this business's real volume with room to spare; a
+  // true "always complete no matter how large" list would need real
+  // pagination, which is a bigger change than this fix warrants.
   const { data, error } = await supabaseClient
     .from("notifications")
     .select("id, channel, subject, status, attempts, created_at")
     .order("created_at", { ascending: false })
-    .limit(50);
+    .limit(2000);
 
   if (error) {
     console.error(error);
@@ -2092,11 +2317,15 @@ async function loadRealAdminAlerts() {
 async function loadRealReceipts() {
   if (!supabaseClient || userRole() !== "admin") return;
 
+  // Same reasoning as loadRealNotifications() above: receipts.html's
+  // "See all" reuses this exact array, so the cap here is the real cap on
+  // what "Full list" shows - and this one is an audit trail, not just an
+  // operational view, so silently missing older receipts matters more.
   const { data, error } = await supabaseClient
     .from("ticket_receipts")
     .select("*")
     .order("resolved_at", { ascending: false })
-    .limit(200);
+    .limit(2000);
 
   if (error) {
     console.error(error);
@@ -2137,11 +2366,13 @@ async function acknowledgeAlert(alertId) {
 async function loadRealClientErrors() {
   if (!supabaseClient || userRole() !== "admin") return;
 
+  // Same reasoning as loadRealNotifications() above - client-errors.html's
+  // "See all" reuses this exact array.
   const { data, error } = await supabaseClient
     .from("client_error_logs")
     .select("*")
     .order("created_at", { ascending: false })
-    .limit(200);
+    .limit(2000);
 
   if (error) {
     console.error(error);
@@ -2501,6 +2732,12 @@ function ticketCardHtml(ticket, canDeleteTicket) {
   const safePriority = escapeHtml(normalizePriority(ticket.priority));
   const safeCompany = escapeHtml(ticket.company || "Company");
   const safeLocation = escapeHtml(ticket.location || "No location provided");
+  // A phone-in job has no real customer account behind it - ticket.customer
+  // is whichever staff member logged it, not who the job is actually for.
+  // Lead with the caller's own name/number when there is one.
+  const whoLine = ticket.callerName
+    ? `📞 ${escapeHtml(ticket.callerName)}${ticket.callerPhone ? ` (${escapeHtml(ticket.callerPhone)})` : ""} · logged by ${escapeHtml(ticket.customer || "staff")}`
+    : escapeHtml(ticket.customer || "");
 
   return `
     <article class="ticket-card">
@@ -2509,12 +2746,13 @@ function ticketCardHtml(ticket, canDeleteTicket) {
         <div class="ticket-meta">
           <span class="badge badge-muted">${safeNumber}</span>
           ${statusBadge(ticket.status)}
+          <span class="badge badge-muted">${escapeHtml(jobTypeLabel(ticket.jobType))}</span>
           <span class="badge ${safePriority === "High" ? "badge-danger" : "badge-muted"}">${safePriority}</span>
           ${ticket.callback ? `<span class="badge badge-ok">☎ Callback</span>` : ""}
           ${ticket.id === state.selectedTicketId ? `<span class="badge badge-ok">Open</span>` : ""}
         </div>
         <p class="small muted">
-          ${escapeHtml(ticket.customer || "")}${safeCompany ? ` · ${safeCompany}` : ""} · ${safeLocation}
+          ${whoLine}${safeCompany ? ` · ${safeCompany}` : ""} · ${safeLocation}
         </p>
         <p class="small muted">${escapeHtml(relativeTime(ticket.createdAt))}</p>
       </div>
@@ -2622,7 +2860,16 @@ function ticketsPage() {
 // still returns everything by default with no filter, which is too much
 // to dump onto the screen unasked). State lives outside `state` itself so
 // a stale search result never gets persisted to localStorage.
-let reportFilters = { customer: "", serviceCallNumber: "", dateFrom: "", dateTo: "" };
+let reportFilters = {
+  customer: "",
+  serviceCallNumber: "",
+  dateFrom: "",
+  dateTo: "",
+  status: "all",
+  priority: "all",
+  technicianId: "all",
+  jobType: "all"
+};
 let reportResults = [];
 let reportSearched = false;
 let isReportLoading = false;
@@ -2634,7 +2881,7 @@ function reportsPage() {
         <h2>Reports</h2>
         <a class="secondary-button" href="${dashboardRouteForRole()}.html">Back</a>
       </div>
-      <p class="muted small">Search by customer, service call number, or date. The reported fault, the technician's findings and resolution, and the service call number all show together in one summary.</p>
+      <p class="muted small">Search by customer, service call number, date, status, priority or technician - combine as many as you need. The reported fault, the technician's findings and resolution, the service call number and every attached file all show together in one summary.</p>
       <form id="reportSearchForm" class="form-grid">
         <div class="field">
           <label for="report-customer">Customer, email or company</label>
@@ -2651,6 +2898,46 @@ function reportsPage() {
         <div class="field">
           <label for="report-date-to">To</label>
           <input id="report-date-to" name="dateTo" type="date" value="${escapeHtml(reportFilters.dateTo)}" />
+        </div>
+        <div class="field">
+          <label for="report-status">Status</label>
+          <select id="report-status" name="status">
+            <option value="all" ${reportFilters.status === "all" ? "selected" : ""}>All statuses</option>
+            <option value="new" ${reportFilters.status === "new" ? "selected" : ""}>New</option>
+            <option value="in_progress" ${reportFilters.status === "in_progress" ? "selected" : ""}>In Progress</option>
+            <option value="resolved" ${reportFilters.status === "resolved" ? "selected" : ""}>Resolved</option>
+            <option value="closed" ${reportFilters.status === "closed" ? "selected" : ""}>Closed</option>
+          </select>
+        </div>
+        <div class="field">
+          <label for="report-priority">Priority</label>
+          <select id="report-priority" name="priority">
+            <option value="all" ${reportFilters.priority === "all" ? "selected" : ""}>Any priority</option>
+            <option value="high" ${reportFilters.priority === "high" ? "selected" : ""}>High</option>
+            <option value="medium" ${reportFilters.priority === "medium" ? "selected" : ""}>Medium</option>
+            <option value="low" ${reportFilters.priority === "low" ? "selected" : ""}>Low</option>
+          </select>
+        </div>
+        <div class="field">
+          <label for="report-technician">Technician</label>
+          <select id="report-technician" name="technicianId">
+            <option value="all" ${reportFilters.technicianId === "all" ? "selected" : ""}>Any technician</option>
+            ${state.technicians
+              .map(
+                (tech) =>
+                  `<option value="${escapeHtml(tech.id)}" ${reportFilters.technicianId === tech.id ? "selected" : ""}>${escapeHtml(tech.name)}</option>`
+              )
+              .join("")}
+          </select>
+        </div>
+        <div class="field">
+          <label for="report-job-type">Job Type</label>
+          <select id="report-job-type" name="jobType">
+            <option value="all" ${reportFilters.jobType === "all" ? "selected" : ""}>Any job type</option>
+            <option value="service" ${reportFilters.jobType === "service" ? "selected" : ""}>Service</option>
+            <option value="fault" ${reportFilters.jobType === "fault" ? "selected" : ""}>Fault</option>
+            <option value="installation" ${reportFilters.jobType === "installation" ? "selected" : ""}>Installation</option>
+          </select>
         </div>
         <div class="action-row">
           <button class="primary-button" type="submit" ${isReportLoading ? "disabled" : ""}>${isReportLoading ? "Searching…" : "Search"}</button>
@@ -2696,10 +2983,17 @@ function reportResultsHtml() {
             <div class="ticket-meta">
               <span class="badge badge-muted">${escapeHtml(row.ticket_number)}</span>
               ${statusBadge(row.status)}
+              <span class="badge badge-muted">${escapeHtml(jobTypeLabel(row.job_type))}</span>
+              <span class="badge badge-muted">${escapeHtml(normalizePriority(row.priority))}</span>
               ${row.service_call_number ? `<span class="badge badge-ok mono">${escapeHtml(row.service_call_number)}</span>` : ""}
+              ${Number(row.attachment_count) > 0 ? `<span class="badge badge-muted">📎 ${Number(row.attachment_count)}</span>` : ""}
             </div>
             <p class="small muted">
-              ${escapeHtml(row.customer_name || row.customer_email || "Unknown customer")}${row.company_name ? ` · ${escapeHtml(row.company_name)}` : ""}
+              ${
+                row.caller_name
+                  ? `📞 ${escapeHtml(row.caller_name)}${row.caller_phone ? ` (${escapeHtml(row.caller_phone)})` : ""} · logged by ${escapeHtml(row.customer_name || "staff")}`
+                  : escapeHtml(row.customer_name || row.customer_email || "Unknown customer")
+              }${row.company_name ? ` · ${escapeHtml(row.company_name)}` : ""}
             </p>
             <p class="small muted">${escapeHtml(relativeTime(row.created_at))}</p>
             ${
@@ -2739,9 +3033,14 @@ function exportReportsToCsv() {
   const headers = [
     "Ticket Number",
     "Status",
+    "Job Type",
+    "Priority",
     "Service Call Number",
+    "Attachments",
     "Customer",
     "Customer Email",
+    "Caller (if phoned in)",
+    "Caller Phone",
     "Company",
     "Technician",
     "Reported",
@@ -2753,9 +3052,14 @@ function exportReportsToCsv() {
   const rows = reportResults.map((row) => [
     row.ticket_number,
     statusLabel(row.status),
+    jobTypeLabel(row.job_type),
+    normalizePriority(row.priority),
     row.service_call_number || "",
+    Number(row.attachment_count) || 0,
     row.customer_name || "",
     row.customer_email || "",
+    row.caller_name || "",
+    row.caller_phone || "",
     row.company_name || "",
     row.technician_name || "",
     formatDateTime(row.created_at),
@@ -2796,7 +3100,11 @@ async function searchReports(event) {
     customer: String(form.get("customer") || "").trim(),
     serviceCallNumber: String(form.get("serviceCallNumber") || "").trim(),
     dateFrom: String(form.get("dateFrom") || ""),
-    dateTo: String(form.get("dateTo") || "")
+    dateTo: String(form.get("dateTo") || ""),
+    status: String(form.get("status") || "all"),
+    priority: String(form.get("priority") || "all"),
+    technicianId: String(form.get("technicianId") || "all"),
+    jobType: String(form.get("jobType") || "all")
   };
 
   isReportLoading = true;
@@ -2807,7 +3115,11 @@ async function searchReports(event) {
       p_customer_query: reportFilters.customer || null,
       p_service_call_number: reportFilters.serviceCallNumber || null,
       p_date_from: reportFilters.dateFrom || null,
-      p_date_to: reportFilters.dateTo || null
+      p_date_to: reportFilters.dateTo || null,
+      p_status: reportFilters.status !== "all" ? reportFilters.status : null,
+      p_priority: reportFilters.priority !== "all" ? reportFilters.priority : null,
+      p_technician_id: reportFilters.technicianId !== "all" ? reportFilters.technicianId : null,
+      p_job_type: reportFilters.jobType !== "all" ? reportFilters.jobType : null
     });
 
     if (error) {
@@ -2825,10 +3137,21 @@ async function searchReports(event) {
   }
 }
 
+// Bumped on every call so a slow attachment fetch from an earlier click
+// can tell it's been superseded and skip writing into a modal that has
+// since moved on to a different report (or closed) - same guard
+// receiptModalToken uses for the same race.
+let reportModalToken = 0;
+
 // showModal() only shows plain text - a service report has real structure,
 // so it gets its own layout, the same reasoning openReceiptModal() already
-// follows for a resolution receipt.
-function openReportSummaryModal(reportId) {
+// follows for a resolution receipt. Async because the service call number
+// and its supporting attachments (the receipt photo, any other photos)
+// live in two different places - this fetches ticket_detail() after the
+// modal opens so both show together in one summary instead of sending
+// staff to the full ticket to see what backs the number up.
+async function openReportSummaryModal(reportId) {
+  const myToken = ++reportModalToken;
   const report = reportResults.find((row) => row.id === reportId);
   const overlay = document.getElementById("modalOverlay");
   const card = document.getElementById("modalCard");
@@ -2844,8 +3167,14 @@ function openReportSummaryModal(reportId) {
         ${statusBadge(report.status)}
       </div>
       <dl class="detail-facts">
-        <div><dt>Customer</dt><dd>${escapeHtml(report.customer_name || report.customer_email || "—")}</dd></div>
+        <div><dt>${report.caller_name ? "Logged by" : "Customer"}</dt><dd>${escapeHtml(report.customer_name || report.customer_email || "—")}</dd></div>
+        ${
+          report.caller_name
+            ? `<div><dt>Caller</dt><dd>${escapeHtml(report.caller_name)}${report.caller_phone ? ` · ${escapeHtml(report.caller_phone)}` : ""}</dd></div>`
+            : ""
+        }
         <div><dt>Company</dt><dd>${escapeHtml(report.company_name || "—")}</dd></div>
+        <div><dt>Job Type</dt><dd>${escapeHtml(jobTypeLabel(report.job_type))}</dd></div>
         <div><dt>Technician</dt><dd>${escapeHtml(report.technician_name || "Unassigned")}</dd></div>
         <div><dt>Service call number</dt><dd class="mono">${escapeHtml(report.service_call_number || "—")}</dd></div>
         <div><dt>Reported</dt><dd>${escapeHtml(formatDateTime(report.created_at))}</dd></div>
@@ -2857,6 +3186,9 @@ function openReportSummaryModal(reportId) {
       <hr />
       <p class="small muted" style="margin-bottom: 4px;">Technician's findings, actions taken and resolution</p>
       <p>${report.resolution_notes ? escapeHtml(report.resolution_notes) : "Not yet resolved."}</p>
+      <hr />
+      <p class="small muted" style="margin-bottom: 4px;">Attachments (photos, videos, service call receipt)</p>
+      <div id="reportAttachmentsHost" class="small muted">Loading attachments…</div>
       <div class="modal-actions">
         <button class="secondary-button" type="button" data-close-modal>Close</button>
         <button class="primary-button" type="button" data-open-full-ticket="${escapeHtml(report.id)}">Open full ticket</button>
@@ -2876,9 +3208,57 @@ function openReportSummaryModal(reportId) {
   };
 
   overlay.classList.add("is-visible");
+
+  // Fetched after the modal is already open rather than delaying it, same
+  // reasoning as openReceiptModal()'s photo and loadTicketDetail()'s
+  // attachments - ticket_detail() is staff/customer-safe (can_view_ticket())
+  // and agent/admin can always view a ticket report_search() surfaced them.
+  if (supabaseClient) {
+    try {
+      const { data, error } = await supabaseClient.rpc("ticket_detail", { p_ticket_id: reportId });
+      if (myToken !== reportModalToken) return;
+
+      const host = card.querySelector("#reportAttachmentsHost");
+      if (!host) return;
+
+      if (error) {
+        host.textContent = "Could not load attachments.";
+        return;
+      }
+
+      const attachments = data?.attachments || [];
+      await Promise.all(
+        attachments.map(async (attachment) => {
+          const { data: signed, error: signError } = await supabaseClient.storage
+            .from(attachment.bucket_name)
+            .createSignedUrl(attachment.file_path, 60 * 60);
+
+          if (signError) {
+            console.error("Could not sign attachment", attachment.file_path, signError);
+            attachment.url = null;
+          } else {
+            attachment.url = signed?.signedUrl || null;
+          }
+        })
+      );
+
+      if (myToken !== reportModalToken) return;
+      host.outerHTML = `<div id="reportAttachmentsHost">${attachmentGallery({ attachments, ticket: { id: reportId } }, { allowDelete: false })}</div>`;
+    } catch (err) {
+      if (myToken !== reportModalToken) return;
+      const host = card.querySelector("#reportAttachmentsHost");
+      if (host) host.textContent = "Could not load attachments.";
+      console.error("Could not load report attachments", err);
+    }
+  }
 }
 
-function attachmentGallery(detail) {
+// allowDelete: false renders the same gallery with every Delete button
+// suppressed - used by the Reports summary, which injects this markup into
+// a modal that never wires up [data-delete-attachment] click handlers (that
+// binding only runs over the ticket detail panel). Without this flag those
+// buttons would render but silently do nothing.
+function attachmentGallery(detail, { allowDelete = true } = {}) {
   const attachments = detail?.attachments || [];
 
   if (!attachments.length) {
@@ -2897,6 +3277,7 @@ function attachmentGallery(detail) {
           // offered for deletion, matching the RLS policy that backs
           // this up server-side regardless of what the UI offers.
           const canDelete =
+            allowDelete &&
             attachment.file_type !== "service_receipt" &&
             (attachment.uploaded_by === currentProfile?.id || userRole() === "admin");
           const deleteButton = canDelete
@@ -3070,6 +3451,12 @@ function renderTicketDetail(ticket) {
   const priority = normalizePriority(ticket.priority);
   const raisedBy = escapeHtml(detail?.created_by_name || ticket.customer || "Customer");
   const companyName = escapeHtml(detail?.company_name || ticket.company || "");
+  // Set only on a job a staff member logged for a caller who never touched
+  // the portal - detail.ticket carries every column via to_jsonb(), so
+  // caller_name/caller_phone are already there once ticket_detail() loads;
+  // ticket.callerName covers the moment before that finishes.
+  const callerName = detail?.ticket?.caller_name || ticket.callerName || "";
+  const callerPhone = detail?.ticket?.caller_phone || ticket.callerPhone || "";
   const description = detail?.ticket?.description || "";
   const callback = detail?.callback;
   const hasCoords = detail?.ticket?.location_lat != null && detail?.ticket?.location_lng != null;
@@ -3101,8 +3488,14 @@ function renderTicketDetail(ticket) {
         }
 
         <dl class="detail-facts">
-          <div><dt>Raised by</dt><dd>${raisedBy}</dd></div>
+          <div><dt>${callerName ? "Logged by" : "Raised by"}</dt><dd>${raisedBy}</dd></div>
+          ${
+            callerName
+              ? `<div><dt>Caller</dt><dd>${escapeHtml(callerName)}${callerPhone ? ` · <a href="tel:${escapeHtml(telHref(callerPhone))}">${escapeHtml(callerPhone)}</a>` : ""}</dd></div>`
+              : ""
+          }
           <div><dt>Company</dt><dd>${companyName || "—"}</dd></div>
+          <div><dt>Job Type</dt><dd>${escapeHtml(jobTypeLabel(detail?.ticket?.job_type || ticket.jobType))}</dd></div>
           <div><dt>Priority</dt><dd>${escapeHtml(priority)}</dd></div>
           <div><dt>Technician</dt><dd>${escapeHtml(ticketTechnicianName(ticket))}</dd></div>
           <div>
@@ -3483,6 +3876,15 @@ function customerView() {
           <input type="hidden" name="customer" value="${escapeHtml(customerName)}" />
           <input type="hidden" name="company" value="${escapeHtml(companyName)}" />
           <div class="field">
+            <label for="jobType">Job Type</label>
+            <select id="jobType" name="jobType" required>
+              <option value="" disabled selected>Choose one…</option>
+              <option value="service">Service</option>
+              <option value="fault">Fault</option>
+              <option value="installation">Installation</option>
+            </select>
+          </div>
+          <div class="field">
             <label for="title">Problem</label>
             <input id="title" name="title" minlength="3" maxlength="200"
                    placeholder="Example: scanner not reading barcodes" required />
@@ -3554,6 +3956,7 @@ function agentView() {
           <h2>Ticket Queue</h2>
           <div class="action-row">
             <a class="secondary-button" href="reports.html">Reports</a>
+            <button class="secondary-button" type="button" id="logTicketBtn">📞 Log a Call-In Job</button>
             <button class="secondary-button" type="button" id="loadRealTicketsBtn">Refresh</button>
           </div>
         </div>
@@ -3610,7 +4013,10 @@ function technicianView() {
       <div class="panel">
         <div class="panel-title">
           <h2>${isMine ? "My Jobs" : "Technician Jobs"}</h2>
-          <span class="badge badge-muted">${assigned.length} assigned</span>
+          <div class="action-row">
+            <span class="badge badge-muted">${assigned.length} assigned</span>
+            <button class="secondary-button compact-button" type="button" id="logTicketBtn">📞 Log a Call-In Job</button>
+          </div>
         </div>
         ${
           assigned.length
@@ -4361,6 +4767,9 @@ function bindEvents() {
         button.dataset.attachmentTicket
       );
   });
+
+  const logTicketBtn = document.querySelector("#logTicketBtn");
+  if (logTicketBtn) logTicketBtn.onclick = () => openLogTicketModal();
 
   const reportSearchForm = document.querySelector("#reportSearchForm");
   if (reportSearchForm) reportSearchForm.onsubmit = searchReports;

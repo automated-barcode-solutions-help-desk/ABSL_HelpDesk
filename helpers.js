@@ -72,6 +72,23 @@ function statusLabel(status) {
   return map[status] || "New";
 }
 
+// What kind of job this is - a customer/staff choice made once at creation,
+// separate from priority (how urgent) and status (how far along).
+function normalizeJobType(jobType) {
+  const value = String(jobType || "").toLowerCase();
+  if (value === "service" || value === "installation") return value;
+  return "fault";
+}
+
+function jobTypeLabel(jobType) {
+  const map = {
+    service: "Service",
+    fault: "Fault",
+    installation: "Installation"
+  };
+  return map[normalizeJobType(jobType)];
+}
+
 /**
  * Which statuses a role is allowed to move a ticket to. Mirrors
  * change_ticket_status() in 0003 — the database is still the authority,
@@ -246,6 +263,14 @@ function friendlyError(message) {
   if (/row-level security|not allowed|permitted/i.test(text)) {
     return "You do not have permission to do that.";
   }
+  // Checked before the generic "account already exists" branch below - a
+  // duplicate-key error isn't always about a login. Two staff logging a
+  // call-in job for a brand new company at almost the same moment (see
+  // staff_log_ticket()) can both lose the race to create it and hit this
+  // constraint instead of the account one.
+  if (/duplicate key/i.test(text) && /companies_name/i.test(text)) {
+    return "That company already exists now - just search for it again and pick it from the list.";
+  }
   if (/duplicate key|already registered|user already/i.test(text)) {
     return "An account already exists for that email address.";
   }
@@ -268,6 +293,8 @@ if (typeof module !== "undefined" && module.exports) {
     localId,
     normalizePriority,
     statusLabel,
+    normalizeJobType,
+    jobTypeLabel,
     allowedStatusTransitions,
     formatBytes,
     validateUpload,
