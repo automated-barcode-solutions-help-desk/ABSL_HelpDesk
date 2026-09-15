@@ -126,3 +126,30 @@ GROUP BY proname
 HAVING count(*) > 1;
 -- Expect: no rows. Any row returned here is a real bug to fix, not
 -- something to interpret.
+
+
+-- 6. Instant-send trigger and its Vault secret ----------------------------
+SELECT count(*) AS m0020_instant_send_trigger
+FROM pg_trigger WHERE tgname = 'trg_send_notifications';
+-- Expect: 1.
+
+-- Checked separately, in its own DO block, because querying
+-- vault.decrypted_secrets directly would error out this entire file on a
+-- project where the vault schema isn't available - unlikely on Supabase,
+-- but this file is meant to always be safe to run regardless.
+DO $$
+DECLARE
+  v_has_secret boolean;
+BEGIN
+  SELECT count(*) > 0 INTO v_has_secret
+  FROM vault.decrypted_secrets WHERE name = 'absl_worker_secret';
+
+  IF v_has_secret THEN
+    RAISE NOTICE 'm0020_worker_secret_in_vault: true - the instant-send trigger is fully authenticated.';
+  ELSE
+    RAISE NOTICE 'm0020_worker_secret_in_vault: false - the instant-send trigger fires but gets refused by send-notifications'' own check (harmless; the 5-minute cron still covers everything). Set it with: select vault.create_secret(''<your WORKER_SECRET value>'', ''absl_worker_secret'');';
+  END IF;
+EXCEPTION
+  WHEN OTHERS THEN
+    RAISE NOTICE 'm0020_worker_secret_in_vault: could not check (vault schema unavailable) - the instant-send trigger still fires safely without it, same as false above.';
+END $$;
