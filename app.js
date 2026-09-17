@@ -4009,7 +4009,7 @@ function technicianView() {
   return `
     ${renderStats()}
     <br />
-    <section class="hero-grid">
+    <section class="hero-grid" style="grid-template-columns: 1fr;">
       <div class="panel">
         <div class="panel-title">
           <h2>${isMine ? "My Jobs" : "Technician Jobs"}</h2>
@@ -4024,6 +4024,9 @@ function technicianView() {
             : `<div class="empty-state">No jobs assigned to you right now. An agent will assign work here.</div>`
         }
       </div>
+      <!-- Parts Inventory panel — held for now, not deleted. Re-add the
+           <div class="panel"> block below (removed on request) and drop the
+           inline grid-template-columns override above to restore it.
       <div class="panel">
         <h2>Parts Inventory</h2>
         ${
@@ -4046,6 +4049,7 @@ function technicianView() {
             : `<div class="empty-state">No inventory items found. Add inventory in Supabase before using parts.</div>`
         }
       </div>
+      -->
     </section>
     <br />
     ${renderTicketDetail(selectedTicket())}
