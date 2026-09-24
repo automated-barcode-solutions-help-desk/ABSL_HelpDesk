@@ -24,7 +24,7 @@
 
 -- ---------------------------------------------------------------------
 -- 2. Promote one person. Edit the two values, then run.
---    Roles: 'customer' | 'agent' | 'technician' | 'admin'
+--    Roles: 'customer' | 'agent' | 'operator' | 'technician' | 'admin'
 -- ---------------------------------------------------------------------
 DO $$
 DECLARE

@@ -24,6 +24,7 @@ const files = [
   "reset-password.html",
   "customer.html",
   "agent.html",
+  "operator.html",
   "technician.html",
   "admin.html",
   "tickets.html",
@@ -39,11 +40,12 @@ const files = [
   "config.js",
   "styles.css",
   "favicon.svg",
+  "manifest.json",
   "robots.txt",
   "_headers"
 ];
 
-const directories = ["vendor"];
+const directories = ["vendor", "icons"];
 
 // A publish must never carry these, whatever else changes.
 const forbidden = [/\.bak$/i, /\.original$/i, /\.sql$/i, /\.env/i, /node_modules/];

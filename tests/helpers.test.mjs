@@ -233,3 +233,19 @@ test("truncate keeps short strings untouched", () => {
   assert.equal(h.truncate("short", 10), "short");
   assert.equal(h.truncate("a".repeat(20), 10).length, 10);
 });
+
+test("formatProblemDescription formats selected common problems and custom details", () => {
+  assert.equal(
+    h.formatProblemDescription(["Sensor is not working", "Power issue"], "Machine turns off randomly"),
+    "Selected Issues: Sensor is not working, Power issue\n\nAdditional Details:\nMachine turns off randomly"
+  );
+  assert.equal(
+    h.formatProblemDescription(["Display issue"], ""),
+    "Selected Issues: Display issue"
+  );
+  assert.equal(
+    h.formatProblemDescription([], "Keypad stuck on enter"),
+    "Keypad stuck on enter"
+  );
+});
+

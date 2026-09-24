@@ -89,6 +89,21 @@ function jobTypeLabel(jobType) {
   return map[normalizeJobType(jobType)];
 }
 
+function formatProblemDescription(selectedProblems, customDescription) {
+  const problems = Array.isArray(selectedProblems)
+    ? selectedProblems.map((p) => String(p || "").trim()).filter(Boolean)
+    : [];
+  const text = String(customDescription || "").trim();
+
+  if (problems.length === 0) return text;
+
+  const problemsSummary = `Selected Issues: ${problems.join(", ")}`;
+  if (!text) return problemsSummary;
+
+  return `${problemsSummary}\n\nAdditional Details:\n${text}`;
+}
+
+
 /**
  * Which statuses a role is allowed to move a ticket to. Mirrors
  * change_ticket_status() in 0003 — the database is still the authority,
@@ -97,7 +112,7 @@ function jobTypeLabel(jobType) {
 function allowedStatusTransitions(role, currentStatus) {
   const all = ["new", "in_progress", "resolved", "closed"];
 
-  if (role === "agent" || role === "admin") {
+  if (role === "agent" || role === "operator" || role === "admin") {
     return all.filter((status) => status !== currentStatus);
   }
 
@@ -295,6 +310,7 @@ if (typeof module !== "undefined" && module.exports) {
     statusLabel,
     normalizeJobType,
     jobTypeLabel,
+    formatProblemDescription,
     allowedStatusTransitions,
     formatBytes,
     validateUpload,

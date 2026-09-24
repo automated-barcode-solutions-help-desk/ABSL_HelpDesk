@@ -12,7 +12,7 @@ let isDataLoading = false;
 let adminAlerts = [];
 
 const publicRoutes = ["login", "register"];
-const dashboardRoutes = ["customer", "agent", "technician", "admin"];
+const dashboardRoutes = ["customer", "agent", "operator", "technician", "admin"];
 
 // Each role gets its own portal: its own page, its own colour, its own name,
 // and its own slice of the data. Nothing loads data a role has no business
@@ -29,6 +29,12 @@ const portals = {
     tagline: "Triage the queue and keep customers answered",
     accent: "agent",
     loads: ["tickets", "comments", "technicians", "companies", "staff", "callbacks"]
+  },
+  operator: {
+    name: "Operator Desk",
+    tagline: "Dispatch unassigned jobs and watch the alerts",
+    accent: "operator",
+    loads: ["tickets", "comments", "companies", "staff", "callbacks", "alerts"]
   },
   technician: {
     name: "Technician Field App",
@@ -89,6 +95,36 @@ const initialState = {
 };
 
 const TICKETS_PER_PAGE = 12;
+
+const COMMON_PROBLEM_OPTIONS = [
+  "Sensor is not working",
+  "Power issue",
+  "Display issue",
+  "Machine is not working",
+  "Key pad is not working",
+  "Data not transfer",
+  "Other"
+];
+
+function renderCommonProblemsSelector(prefix = "") {
+  return `
+    <div class="field">
+      <label class="field-label">Common Problems (Tick all that apply)</label>
+      <div class="common-problems-grid">
+        ${COMMON_PROBLEM_OPTIONS.map((prob, idx) => {
+          const id = `${prefix}prob-${idx}`;
+          return `
+            <label class="problem-checkbox-card" for="${id}">
+              <input type="checkbox" name="commonProblems" value="${escapeHtml(prob)}" id="${id}" class="common-problem-checkbox" />
+              <span class="problem-label">${escapeHtml(prob)}</span>
+            </label>
+          `;
+        }).join("")}
+      </div>
+    </div>
+  `;
+}
+
 
 let state = loadState();
 
@@ -444,23 +480,31 @@ function openLogTicketModal() {
     .map((company) => `<option value="${escapeHtml(company.name)}"></option>`)
     .join("");
 
+  const isTechnician = userRole() === "technician";
+
   card.innerHTML = `
-    <h3>Log a Call-In Job</h3>
-    <p class="muted small">For a customer who went straight to the phone instead of the portal. This creates a normal ticket you can assign, work, and resolve like any other.</p>
+    <h3>Log a Job</h3>
+    <p class="muted small">For work that didn't come through the portal — a customer who phoned in, or a job you need to do yourself without anyone calling. This creates a normal ticket you can assign, work, and resolve like any other.</p>
     <form id="logTicketForm">
+      <label class="field inline-check">
+        <span>${isTechnician ? "This is my own job — nobody called, I need to service this myself." : "This is a job nobody called in for — just log it, no caller to record."}</span>
+        <input type="checkbox" name="selfJob" id="log-self-job" />
+      </label>
       <div class="field">
         <label for="log-company">Company</label>
         <input id="log-company" name="company" list="logTicketCompanies" required maxlength="200" placeholder="e.g. Cargills Food City" />
         <datalist id="logTicketCompanies">${companyOptions}</datalist>
         <span class="small muted">Type an existing company, or a new one — a new name is added automatically.</span>
       </div>
-      <div class="field">
-        <label for="log-caller-name">Caller's name</label>
-        <input id="log-caller-name" name="callerName" required maxlength="200" placeholder="Who called in?" />
-      </div>
-      <div class="field">
-        <label for="log-caller-phone">Caller's phone</label>
-        <input id="log-caller-phone" name="callerPhone" type="tel" maxlength="20" placeholder="07X XXX XXXX" />
+      <div id="log-caller-fields">
+        <div class="field">
+          <label for="log-caller-name">Caller's name</label>
+          <input id="log-caller-name" name="callerName" maxlength="200" placeholder="Who called in?" />
+        </div>
+        <div class="field">
+          <label for="log-caller-phone">Caller's phone</label>
+          <input id="log-caller-phone" name="callerPhone" type="tel" maxlength="20" placeholder="07X XXX XXXX" />
+        </div>
       </div>
       <div class="field">
         <label for="log-job-type">Job Type</label>
@@ -472,12 +516,23 @@ function openLogTicketModal() {
         </select>
       </div>
       <div class="field">
-        <label for="log-title">Problem</label>
+        <label for="log-department">Department</label>
+        <input id="log-department" name="department" maxlength="200"
+               placeholder="Which department has the fault? (optional)" />
+      </div>
+      <div class="field">
+        <label for="log-location">Fault location</label>
+        <input id="log-location" name="location" maxlength="200"
+               placeholder="Where at the site is the fault? (optional)" />
+      </div>
+      <div class="field">
+        <label for="log-title">Problem Summary</label>
         <input id="log-title" name="title" minlength="3" maxlength="200" required
                placeholder="Example: scanner not reading barcodes" />
       </div>
+      ${renderCommonProblemsSelector("log-")}
       <div class="field">
-        <label for="log-description">What is happening?</label>
+        <label for="log-description">Describe Particular Problem / Details</label>
         <textarea id="log-description" name="description" rows="4" maxlength="5000"
                   placeholder="What did the caller describe?"></textarea>
       </div>
@@ -489,6 +544,15 @@ function openLogTicketModal() {
           <option>Low</option>
         </select>
       </div>
+      <label class="field inline-check" id="log-open-for-claim-row">
+        <span>Can't take this yourself right now? Open it to every technician — first to accept gets the job.</span>
+        <input type="checkbox" name="openForClaim" id="log-open-for-claim" />
+      </label>
+      ${
+        isTechnician
+          ? `<p class="small muted" id="log-self-job-hint" hidden>This job will be assigned to you — hand it to a colleague afterwards if you can't take it.</p>`
+          : ""
+      }
       <div class="modal-actions">
         <button class="secondary-button" type="button" data-close-modal>Cancel</button>
         <button class="primary-button" type="submit">Log Job</button>
@@ -500,26 +564,75 @@ function openLogTicketModal() {
     overlay.classList.remove("is-visible");
   };
 
+  const selfJobCheckbox = card.querySelector("#log-self-job");
+  const callerFields = card.querySelector("#log-caller-fields");
+  const openForClaimRow = card.querySelector("#log-open-for-claim-row");
+  const openForClaimCheckbox = card.querySelector("#log-open-for-claim");
+  const selfJobHint = card.querySelector("#log-self-job-hint");
+  selfJobCheckbox.onchange = () => {
+    const isSelfJob = selfJobCheckbox.checked;
+    callerFields.hidden = isSelfJob;
+    openForClaimRow.hidden = isSelfJob;
+    if (isSelfJob) openForClaimCheckbox.checked = false;
+    if (selfJobHint) selfJobHint.hidden = !isSelfJob;
+  };
+
+  const logCommonCheckboxes = card.querySelectorAll(".common-problem-checkbox");
+  const logTitleInput = card.querySelector("#log-title");
+  const logDescInput = card.querySelector("#log-description");
+
+  logCommonCheckboxes.forEach((cb) => {
+    cb.addEventListener("change", () => {
+      const selected = Array.from(logCommonCheckboxes)
+        .filter((c) => c.checked && c.value !== "Other")
+        .map((c) => c.value);
+
+      if (selected.length > 0 && (!logTitleInput.dataset.userEdited || !logTitleInput.value.trim())) {
+        logTitleInput.value = selected.join(", ");
+      }
+      if (cb.value === "Other" && cb.checked && logDescInput) {
+        logDescInput.focus();
+      }
+    });
+  });
+
+  if (logTitleInput) {
+    logTitleInput.addEventListener("input", () => {
+      if (logTitleInput.value.trim()) logTitleInput.dataset.userEdited = "true";
+    });
+  }
+
   card.querySelector("#logTicketForm").onsubmit = async (event) => {
     event.preventDefault();
     const form = new FormData(event.target);
     const company = String(form.get("company") || "").trim();
     const callerName = String(form.get("callerName") || "").trim();
     const callerPhone = String(form.get("callerPhone") || "").trim();
-    const title = String(form.get("title") || "").trim();
-    const description = String(form.get("description") || "").trim();
+    const rawTitle = String(form.get("title") || "").trim();
+    const rawDescription = String(form.get("description") || "").trim();
+    const commonProblems = form.getAll("commonProblems").filter((p) => p && p !== "Other");
+
+    const description = formatProblemDescription(commonProblems, rawDescription);
+    let title = rawTitle;
+    if (!title && commonProblems.length > 0) {
+      title = commonProblems.join(", ");
+    }
     const priority = normalizePriority(form.get("priority")).toLowerCase();
     const jobType = String(form.get("jobType") || "");
+    const department = String(form.get("department") || "").trim();
+    const location = String(form.get("location") || "").trim();
+    const openForClaim = form.get("openForClaim") === "on";
+    const selfJob = form.get("selfJob") === "on";
 
     if (!company) {
       showToast("A company name is required.", "warning");
       return;
     }
-    if (!callerName) {
+    if (!selfJob && !callerName) {
       showToast("The caller's name is required.", "warning");
       return;
     }
-    if (callerPhone && !isValidPhone(callerPhone)) {
+    if (!selfJob && callerPhone && !isValidPhone(callerPhone)) {
       showToast("That phone number doesn't look right — try 0771234567.", "warning");
       return;
     }
@@ -532,6 +645,7 @@ function openLogTicketModal() {
       return;
     }
 
+
     if (!supabaseClient) {
       showToast("Supabase is not configured.", "warning");
       return;
@@ -543,12 +657,16 @@ function openLogTicketModal() {
     try {
       const { data, error } = await supabaseClient.rpc("staff_log_ticket", {
         p_company_name: company,
-        p_caller_name: callerName,
-        p_caller_phone: callerPhone || null,
+        p_caller_name: selfJob ? null : callerName,
+        p_caller_phone: selfJob ? null : callerPhone || null,
         p_title: title,
         p_description: description || null,
         p_priority: priority,
-        p_job_type: jobType
+        p_job_type: jobType,
+        p_department: department || null,
+        p_location: location || null,
+        p_open_for_claim: selfJob ? false : openForClaim,
+        p_self_job: selfJob
       });
 
       if (error) {
@@ -558,7 +676,14 @@ function openLogTicketModal() {
       }
 
       overlay.classList.remove("is-visible");
-      showToast(`Job logged: ${data.ticket_number}`, "success");
+      showToast(
+        data.assigned_technician_id === currentProfile?.id
+          ? `Job logged: ${data.ticket_number} — assigned to you.`
+          : openForClaim
+            ? `Job logged: ${data.ticket_number} — open to every technician.`
+            : `Job logged: ${data.ticket_number}`,
+        "success"
+      );
       state.selectedTicketId = data.id;
       saveState();
       await loadRealCompanies();
@@ -942,10 +1067,16 @@ async function signUpUser(event) {
   const password = form.get("password");
   const fullName = form.get("fullName");
   const companyName = form.get("companyName");
+  const phone = String(form.get("phone") || "").trim();
   // This is a REQUEST only. handle_new_user() always creates the profile as
   // an unprivileged customer; an admin grants the technician role on
   // approval. Never send a role the database would trust.
   const requestedRole = form.get("role") === "technician" ? "technician" : "customer";
+
+  if (!isValidPhone(phone)) {
+    showToast("Enter a valid phone number, for example 0771234567.", "warning");
+    return;
+  }
 
   isDataLoading = true;
   render();
@@ -958,6 +1089,7 @@ async function signUpUser(event) {
         data: {
           full_name: fullName,
           company_name: companyName,
+          phone,
           requested_role: requestedRole // reviewed by an admin, not trusted
         }
       }
@@ -1377,6 +1509,43 @@ async function assignTechnician(ticketId, technicianId, reason) {
   }
 }
 
+// The other half of dispatch: a job nobody has claimed yet can be opened to
+// every technician at once instead of hand-picking one. First technician to
+// accept it (via the same assign control technicians already use to claim
+// an unassigned job) gets it.
+async function releaseTicketToPool(ticketId) {
+  if (!supabaseClient || !isUuid(ticketId)) return;
+
+  const confirmed = await showConfirm(
+    "Open this job to every technician? The first one to accept it gets the job.",
+    "Release to all technicians"
+  );
+  if (!confirmed) return;
+
+  isDataLoading = true;
+  render();
+
+  try {
+    const { error } = await supabaseClient.rpc("release_ticket_to_pool", {
+      p_ticket_id: ticketId
+    });
+
+    if (error) {
+      showToast(friendlyError(error.message), "error");
+      return;
+    }
+
+    showToast("Released to every technician.", "success");
+    await loadRealSupportData({ shouldRender: false });
+    await loadTicketDetail(ticketId);
+  } catch (err) {
+    showToast(friendlyError(err), "error");
+  } finally {
+    isDataLoading = false;
+    render();
+  }
+}
+
 // --- Diagram 6: callback requests --------------------------------------
 async function loadCallbackQueue() {
   if (!supabaseClient) return;
@@ -1550,6 +1719,7 @@ async function createRealTicket(ticket) {
     description: String(ticket.description || "").trim() || ticket.title,
     priority: normalizePriority(ticket.priority).toLowerCase(),
     job_type: normalizeJobType(ticket.jobType),
+    department: ticket.department || null,
     location_name: ticket.location,
     location_lat: Number.isFinite(lat) ? lat : null,
     location_lng: Number.isFinite(lng) ? lng : null,
@@ -1630,6 +1800,15 @@ async function createTicket(event) {
   const wantsCallback = data.get("callback") === "on";
   const callbackPhone = String(data.get("callbackPhone") || "").trim();
   const siteContactPhone = String(data.get("siteContactPhone") || "").trim();
+  const commonProblems = data.getAll("commonProblems").filter((p) => p && p !== "Other");
+  const rawTitle = String(data.get("title") || "").trim();
+  const rawDescription = String(data.get("description") || "").trim();
+
+  const formattedDescription = formatProblemDescription(commonProblems, rawDescription);
+  let finalTitle = rawTitle;
+  if (!finalTitle && commonProblems.length > 0) {
+    finalTitle = commonProblems.join(", ");
+  }
 
   if (wantsCallback && !isValidPhone(callbackPhone)) {
     showToast("Add a phone number we can call you on, for example 0771234567.", "warning");
@@ -1645,8 +1824,8 @@ async function createTicket(event) {
   const ticket = {
     id: localId("TCK"),
     number: `ABSL-${new Date().getFullYear()}-${nextNumber}`,
-    title: data.get("title"),
-    description: data.get("description"),
+    title: finalTitle,
+    description: formattedDescription,
     lat: data.get("lat"),
     lng: data.get("lng"),
     accuracy: data.get("accuracy"),
@@ -1655,6 +1834,7 @@ async function createTicket(event) {
     status: "new",
     priority: normalizePriority(data.get("priority")),
     jobType: normalizeJobType(data.get("jobType")),
+    department: String(data.get("department") || "").trim(),
     location: data.get("location"),
     siteContactPhone,
     callback: data.get("callback") === "on",
@@ -2059,6 +2239,7 @@ async function loadRealTickets(options = {}) {
     assignedAgent: ticket.assigned_agent_id || "Unassigned",
     assignedTechnician: technicianNameById(ticket.assigned_technician_id),
     assignedTechnicianId: ticket.assigned_technician_id || "",
+    openForClaim: Boolean(ticket.open_for_claim),
     createdAt: ticket.created_at
   }));
 
@@ -2296,7 +2477,7 @@ async function loadRealNotifications() {
 }
 
 async function loadRealAdminAlerts() {
-  if (!supabaseClient || userRole() !== "admin") return;
+  if (!supabaseClient || !["admin", "operator"].includes(userRole())) return;
 
   const { data, error } = await supabaseClient
     .from("admin_alerts")
@@ -2625,6 +2806,15 @@ function renderStats() {
     cards.push(`<article class="stat-card"><span class="muted">Callback requests</span><strong>${state.tickets.filter((ticket) => ticket.callback).length}</strong></article>`);
   }
 
+  if (route === "operator") {
+    const unassigned = state.tickets.filter(
+      (ticket) => !ticket.assignedTechnicianId && ticket.status !== "closed"
+    ).length;
+    cards.push(`<article class="stat-card"><span class="muted">Waiting for a technician</span><strong>${unassigned}</strong></article>`);
+    cards.push(`<article class="stat-card"><span class="muted">Callback requests</span><strong>${state.tickets.filter((ticket) => ticket.callback).length}</strong></article>`);
+    cards.push(`<article class="stat-card"><span class="muted">Unread alerts</span><strong>${adminAlerts.filter((alert) => !alert.acknowledged).length}</strong></article>`);
+  }
+
   if (route === "admin") {
     cards.push(`<article class="stat-card"><span class="muted">Pending approvals</span><strong>${data.pendingApproval}</strong></article>`);
     cards.push(`<article class="stat-card"><span class="muted">Low stock items</span><strong>${data.lowStock}</strong></article>`);
@@ -2676,7 +2866,7 @@ function ticketToolbar(total) {
 // work surface, not a preview of something else. Capping it at five cards
 // silently broke search for any query matching more than five tickets.
 function ticketListHostContent() {
-  return ["tickets", "agent"].includes(currentRoute())
+  return ["tickets", "agent", "operator"].includes(currentRoute())
     ? renderTicketList()
     : renderTicketListCompact(filterTickets(state.tickets, state.filters));
 }
@@ -3399,7 +3589,7 @@ function renderTicketDetail(ticket) {
 
   const detail = currentDetail();
   const role = userRole();
-  const isStaff = ["agent", "technician", "admin"].includes(role);
+  const isStaff = ["agent", "operator", "technician", "admin"].includes(role);
   const canDeleteContent = role === "admin";
   // Prefer the freshly-loaded detail record over the cached dashboard list:
   // state.tickets only updates from the realtime subscription, which can
@@ -3422,6 +3612,7 @@ function renderTicketDetail(ticket) {
   // database allows just produced a confusing "not permitted" error on save.
   const canEditAsStaff =
     role === "agent" ||
+    role === "operator" ||
     role === "admin" ||
     (role === "technician" && assignedTechnicianId === currentProfile?.id);
   const canEdit = canEditAsStaff || (ticket.status === "new" && detail?.ticket?.created_by === currentProfile?.id);
@@ -3430,11 +3621,21 @@ function renderTicketDetail(ticket) {
   // shown to every technician for every ticket, enabled, and only the RPC
   // rejected it — a confusing "not permitted" error on click instead of the
   // control simply not being offered.
+  // An operator dispatches by releasing an unassigned job to every
+  // technician at once (release_ticket_to_pool), not by picking one name -
+  // that stays an agent/admin action, so operator is deliberately absent
+  // here.
   const canReassign =
     role === "agent" ||
     role === "admin" ||
     (role === "technician" &&
       (!assignedTechnicianId || assignedTechnicianId === currentProfile?.id));
+  // Same staleness preference as assignedTechnicianId/ticketStatus above.
+  const openForClaim = detail?.ticket ? detail.ticket.open_for_claim : ticket.openForClaim;
+  const canRelease =
+    !assignedTechnicianId &&
+    !openForClaim &&
+    ["agent", "operator", "admin"].includes(role);
   // A technician claiming an unclaimed job may only claim it for themselves
   // — reassign_ticket() now rejects handing an unclaimed job to a colleague,
   // so don't offer that colleague as an option in the first place.
@@ -3479,7 +3680,7 @@ function renderTicketDetail(ticket) {
             ? `<div class="inline-banner inline-banner-warning callback-banner">
                  ☎ <strong>Callback requested</strong> on ${escapeHtml(callback.phone)}
                  ${
-                   ["agent", "admin"].includes(role)
+                   ["agent", "operator", "admin"].includes(role)
                      ? `<button class="primary-button compact-button" type="button" data-complete-callback="${escapeHtml(callback.id)}">Mark as called</button>`
                      : `<span class="small muted">An agent will call you back.</span>`
                  }
@@ -3496,6 +3697,11 @@ function renderTicketDetail(ticket) {
           }
           <div><dt>Company</dt><dd>${companyName || "—"}</dd></div>
           <div><dt>Job Type</dt><dd>${escapeHtml(jobTypeLabel(detail?.ticket?.job_type || ticket.jobType))}</dd></div>
+          ${
+            detail?.ticket?.department
+              ? `<div><dt>Department</dt><dd>${escapeHtml(detail.ticket.department)}</dd></div>`
+              : ""
+          }
           <div><dt>Priority</dt><dd>${escapeHtml(priority)}</dd></div>
           <div><dt>Technician</dt><dd>${escapeHtml(ticketTechnicianName(ticket))}</dd></div>
           <div>
@@ -3684,6 +3890,22 @@ function renderTicketDetail(ticket) {
         }
 
         ${
+          openForClaim && !assignedTechnicianId
+            ? `<p class="small muted">Open to every technician — first to accept it gets the job.</p>`
+            : ""
+        }
+
+        ${
+          canRelease
+            ? `
+        <hr />
+        <h3>Dispatch</h3>
+        <p class="small muted">Nobody has this job yet. Open it to every technician instead of assigning one directly.</p>
+        <button class="secondary-button" type="button" data-release-to-pool="${safeTicketId}">Release to all technicians</button>`
+            : ""
+        }
+
+        ${
           !isStaff && !callback
             ? `
         <hr />
@@ -3827,8 +4049,15 @@ function registerPage() {
           <input id="reg-email" name="email" type="email" required />
         </div>
         <div class="field">
+          <label for="reg-phone">Phone number</label>
+          <input id="reg-phone" name="phone" type="tel" maxlength="20" placeholder="07X XXX XXXX" required />
+        </div>
+        <div class="field">
           <label for="reg-password">Password</label>
-          <input id="reg-password" name="password" type="password" minlength="6" required />
+          <div class="password-field">
+            <input id="reg-password" name="password" type="password" minlength="6" required />
+            <button class="password-toggle" type="button" id="regPasswordToggle" aria-label="Show password">Show</button>
+          </div>
         </div>
         <button class="primary-button" type="submit">Create Account</button>
         <p class="auth-switch">Already registered? <a href="login.html">Login here</a></p>
@@ -3885,15 +4114,21 @@ function customerView() {
             </select>
           </div>
           <div class="field">
-            <label for="title">Problem</label>
+            <label for="department">Department</label>
+            <input id="department" name="department" maxlength="200"
+                   placeholder="Which department has the fault? (optional)" />
+          </div>
+          <div class="field">
+            <label for="title">Problem Summary</label>
             <input id="title" name="title" minlength="3" maxlength="200"
                    placeholder="Example: scanner not reading barcodes" required />
           </div>
+          ${renderCommonProblemsSelector("cust-")}
           <div class="field">
-            <label for="description">What is happening?</label>
+            <label for="description">Describe Particular Problem / Details</label>
             <textarea id="description" name="description" rows="4" maxlength="5000"
                       placeholder="When did it start, what have you already tried, is the machine still usable?"></textarea>
-            <span class="small muted">Optional, but it usually saves a phone call.</span>
+            <span class="small muted">Optional, select common problems above and add specific details here.</span>
           </div>
           <div class="form-grid">
             <div class="field">
@@ -3998,6 +4233,81 @@ function agentView() {
   `;
 }
 
+// Dispatch role: same queue and callback surface as agent, plus a watch on
+// system alerts. Deliberately no Reports link and no direct technician
+// picker here - see the canReassign/canRelease split in renderTicketDetail
+// for why: an operator opens a job to every technician instead of naming
+// one, which stays an agent/admin action.
+function operatorView() {
+  const unacknowledged = adminAlerts.filter((alert) => !alert.acknowledged);
+  const alertsToShow = (unacknowledged.length ? unacknowledged : adminAlerts).slice(
+    0,
+    ADMIN_LIST_PREVIEW_COUNT
+  );
+
+  return `
+    ${renderStats()}
+    <br />
+    <section class="hero-grid">
+      <div class="panel">
+        <div class="panel-title">
+          <h2>Ticket Queue</h2>
+          <div class="action-row">
+            <button class="secondary-button" type="button" id="logTicketBtn">📞 Log a Call-In Job</button>
+            <button class="secondary-button" type="button" id="loadRealTicketsBtn">Refresh</button>
+          </div>
+        </div>
+        ${ticketToolbar(filterTickets(state.tickets, state.filters).length)}
+      </div>
+      <div class="panel">
+        <div class="panel-title">
+          <h2>Callback Queue</h2>
+          <span class="badge ${state.callbackQueue.length ? "badge-danger" : "badge-muted"}">
+            ${state.callbackQueue.length} waiting
+          </span>
+        </div>
+        ${
+          state.callbackQueue.length
+            ? state.callbackQueue
+                .map(
+                  (callback) => `
+          <div class="inventory-row">
+            <div>
+              <strong>${escapeHtml(callback.phone)}</strong>
+              <p class="small muted">
+                ${escapeHtml(callback.ticketNumber)} · ${escapeHtml(truncate(callback.title, 48))}
+              </p>
+              <span class="small muted">${escapeHtml(callback.customer)} · waiting ${escapeHtml(callback.waitingSince)}</span>
+            </div>
+            <div class="action-row">
+              <a class="secondary-button compact-button" href="tel:${escapeHtml(telHref(callback.phone))}">Call</a>
+              <button class="primary-button compact-button" type="button" data-complete-callback="${escapeHtml(callback.id)}">Done</button>
+            </div>
+          </div>`
+                )
+                .join("")
+            : `<div class="empty-state">Nobody is waiting for a call.</div>`
+        }
+      </div>
+      <div class="panel panel-span-full">
+        <div class="panel-title">
+          <h2>System Alerts</h2>
+          <span class="badge ${unacknowledged.length ? "badge-danger" : "badge-muted"}">
+            ${unacknowledged.length} unread
+          </span>
+        </div>
+        ${
+          alertsToShow.length
+            ? alertsToShow.map(alertRowHtml).join("")
+            : `<div class="empty-state">No alerts logged.</div>`
+        }
+      </div>
+    </section>
+    <br />
+    ${renderTicketDetail(selectedTicket())}
+  `;
+}
+
 function technicianView() {
   // Only this technician's jobs. The old filter showed every assigned ticket
   // in the system, so an admin opening this page saw other people's work as
@@ -4005,11 +4315,31 @@ function technicianView() {
   const myId = currentProfile?.id;
   const assigned = state.tickets.filter((ticket) => ticket.assignedTechnicianId === myId);
   const isMine = userRole() === "technician";
+  // A job someone logged but couldn't take themselves, opened to every
+  // technician at once - first to accept it (via the assign dropdown on the
+  // ticket detail panel, same as any other assignment) gets it. Once
+  // accepted it has an assignedTechnicianId and drops out of this list on
+  // the next refresh.
+  const openPool = isMine
+    ? state.tickets.filter((ticket) => ticket.openForClaim && !ticket.assignedTechnicianId)
+    : [];
 
   return `
     ${renderStats()}
     <br />
     <section class="hero-grid" style="grid-template-columns: 1fr;">
+      ${
+        openPool.length
+          ? `<div class="panel">
+               <div class="panel-title">
+                 <h2>Open Jobs</h2>
+                 <span class="badge badge-danger">${openPool.length} unclaimed</span>
+               </div>
+               <p class="muted small">Nobody has taken these yet. Open a job and use the assign dropdown to accept it — first one there gets it.</p>
+               ${renderTicketListCompact(openPool)}
+             </div>`
+          : ""
+      }
       <div class="panel">
         <div class="panel-title">
           <h2>${isMine ? "My Jobs" : "Technician Jobs"}</h2>
@@ -4378,6 +4708,11 @@ function render() {
       description: "Review incoming tickets, reply to customers, assign technicians, and update ticket progress.",
       render: agentView
     },
+    operator: {
+      title: portals.operator.name,
+      description: "Check unassigned tickets, log phone-in jobs, release jobs to every technician, and watch system alerts.",
+      render: operatorView
+    },
     technician: {
       title: portals.technician.name,
       description: "Open your assigned field jobs, consume inventory with the Work button, and keep job notes up to date.",
@@ -4674,6 +5009,10 @@ function bindEvents() {
     button.onclick = () => completeCallback(button.dataset.completeCallback);
   });
 
+  document.querySelectorAll("[data-release-to-pool]").forEach((button) => {
+    button.onclick = () => releaseTicketToPool(button.dataset.releaseToPool);
+  });
+
   const useGpsBtn = document.querySelector("#useGpsBtn");
   if (useGpsBtn) useGpsBtn.onclick = captureLocation;
 
@@ -4815,6 +5154,17 @@ function bindEvents() {
   const registerForm = document.querySelector("#registerForm");
   if (registerForm) registerForm.onsubmit = signUpUser;
 
+  const regPasswordToggle = document.querySelector("#regPasswordToggle");
+  if (regPasswordToggle) {
+    regPasswordToggle.onclick = () => {
+      const input = document.querySelector("#reg-password");
+      const showing = input.type === "text";
+      input.type = showing ? "password" : "text";
+      regPasswordToggle.textContent = showing ? "Show" : "Hide";
+      regPasswordToggle.setAttribute("aria-label", showing ? "Show password" : "Hide password");
+    };
+  }
+
   const signOutBtn = document.querySelector("#signOutBtn");
   if (signOutBtn) signOutBtn.onclick = signOutUser;
 
@@ -4822,7 +5172,34 @@ function bindEvents() {
   if (signOutBtnGlobal) signOutBtnGlobal.onclick = signOutUser;
 
   const newTicketForm = document.querySelector("#newTicketForm");
-  if (newTicketForm) newTicketForm.onsubmit = createTicket;
+  if (newTicketForm) {
+    newTicketForm.onsubmit = createTicket;
+
+    const custCommonCheckboxes = newTicketForm.querySelectorAll(".common-problem-checkbox");
+    const custTitleInput = newTicketForm.querySelector("#title");
+    const custDescInput = newTicketForm.querySelector("#description");
+
+    custCommonCheckboxes.forEach((cb) => {
+      cb.onchange = () => {
+        const selected = Array.from(custCommonCheckboxes)
+          .filter((c) => c.checked && c.value !== "Other")
+          .map((c) => c.value);
+
+        if (selected.length > 0 && (!custTitleInput.dataset.userEdited || !custTitleInput.value.trim())) {
+          custTitleInput.value = selected.join(", ");
+        }
+        if (cb.value === "Other" && cb.checked && custDescInput) {
+          custDescInput.focus();
+        }
+      };
+    });
+
+    if (custTitleInput) {
+      custTitleInput.oninput = () => {
+        if (custTitleInput.value.trim()) custTitleInput.dataset.userEdited = "true";
+      };
+    }
+  }
 
   const loadRealTicketsBtn = document.querySelector("#loadRealTicketsBtn");
   if (loadRealTicketsBtn) loadRealTicketsBtn.onclick = loadRealSupportData;

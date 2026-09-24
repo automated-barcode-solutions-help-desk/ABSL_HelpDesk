@@ -794,6 +794,33 @@ th {
   resize: vertical;
 }
 
+.password-field {
+  position: relative;
+}
+
+.password-field input {
+  padding-right: 44px;
+}
+
+.password-toggle {
+  position: absolute;
+  right: 6px;
+  top: 50%;
+  transform: translateY(-50%);
+  border: none;
+  background: none;
+  padding: 6px;
+  min-height: 0;
+  cursor: pointer;
+  color: var(--ink-secondary);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.password-toggle:hover {
+  color: var(--ink);
+}
+
 .inline-check {
   align-content: start;
   grid-template-columns: minmax(0, 1fr) auto;
@@ -806,6 +833,54 @@ th {
   min-height: auto;
   accent-color: var(--teal);
 }
+
+/* --- Common Problems Selector Grid --- */
+.common-problems-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  gap: 8px;
+  margin-top: 4px;
+}
+
+.problem-checkbox-card {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  background: var(--paper-solid);
+  border: 1px solid var(--line-solid);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: border-color var(--transition), background-color var(--transition), box-shadow var(--transition);
+  user-select: none;
+}
+
+.problem-checkbox-card:hover {
+  border-color: var(--teal);
+  background: var(--wash);
+}
+
+.problem-checkbox-card input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+  min-height: 16px;
+  margin: 0;
+  accent-color: var(--teal-dark);
+  cursor: pointer;
+}
+
+.problem-checkbox-card .problem-label {
+  font-size: 13.5px;
+  font-weight: 500;
+  color: var(--ink);
+  line-height: 1.3;
+}
+
+.problem-checkbox-card:has(input[type="checkbox"]:checked) {
+  border-color: var(--teal-dark);
+  background: var(--teal-light);
+}
+
 
 /* --- Timeline --- */
 .timeline {
@@ -1322,6 +1397,7 @@ th {
 
 body[data-portal="customer"]   { --portal: var(--teal);   --portal-soft: var(--teal-light); }
 body[data-portal="agent"]      { --portal: var(--blue);   --portal-soft: var(--blue-light); }
+body[data-portal="operator"]   { --portal: var(--green);  --portal-soft: var(--green-light); }
 body[data-portal="technician"] { --portal: var(--amber);  --portal-soft: var(--amber-light); }
 body[data-portal="admin"]      { --portal: var(--purple); --portal-soft: rgba(139, 92, 246, 0.12); }
 
