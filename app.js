@@ -55,6 +55,7 @@ const portals = {
       "inventory",
       "companies",
       "approvals",
+      "staffAccounts",
       "notifications",
       "alerts",
       "receipts",
@@ -84,6 +85,7 @@ const initialState = {
   technicians: [],
   approvals: [],
   notifications: [],
+  staffAccounts: [],
   companies: [],
   selectedCompanyId: "",
   staffNames: {},
@@ -904,7 +906,7 @@ const extraAuthedRoutes = ["tickets", "reset-password"];
 // Alerts, Resolution Receipts). Unlike extraAuthedRoutes, these need more
 // than "someone is signed in" - the data behind them is admin-only, so
 // canAccessRoute() checks the role, not just Boolean(currentUser).
-const adminOnlyExtraRoutes = ["approvals", "notifications", "system-alerts", "receipts", "client-errors"];
+const adminOnlyExtraRoutes = ["approvals", "staff-roles", "notifications", "system-alerts", "receipts", "client-errors"];
 
 // The Reports page: agent and admin, not technician (their dashboard is
 // already scoped to their own jobs) and not customer (report_search() is
@@ -965,10 +967,12 @@ function routeLabel(route) {
     register: "Register",
     customer: portals.customer.name,
     agent: portals.agent.name,
+    operator: portals.operator.name,
     technician: portals.technician.name,
     admin: portals.admin.name,
     tickets: "My Tickets",
     approvals: "User Approvals",
+    "staff-roles": "Manage Staff",
     notifications: "Notifications",
     "system-alerts": "Admin System Alerts",
     receipts: "Resolution Receipts",
@@ -1417,6 +1421,11 @@ async function approveUser(profileId, status) {
     reason = "Rejected by ABSL admin";
   }
 
+  // The admin can grant a different role than what was requested — the
+  // dropdown next to Approve defaults to the request but is editable.
+  const roleSelect = document.querySelector(`#approval-role-${profileId}`);
+  const grantRole = (roleSelect?.value || approval?.requestedRole || "customer").trim();
+
   isDataLoading = true;
   render();
 
@@ -1424,7 +1433,7 @@ async function approveUser(profileId, status) {
     const { error } = await supabaseClient.rpc("admin_review_registration", {
       p_profile_id: profileId,
       p_approve: approve,
-      p_grant_role: approve ? approval?.requestedRole || "customer" : null,
+      p_grant_role: approve ? grantRole : null,
       p_reason: reason
     });
 
@@ -1434,13 +1443,62 @@ async function approveUser(profileId, status) {
     }
 
     showToast(
-      approve
-        ? `Approved as ${approval?.requestedRole || "customer"}.`
-        : "Registration rejected.",
+      approve ? `Approved as ${grantRole}.` : "Registration rejected.",
       approve ? "success" : "info"
     );
 
     await loadRealApprovals();
+    await loadRealTechnicians();
+    saveState();
+  } catch (err) {
+    showToast(friendlyError(err), "error");
+  } finally {
+    isDataLoading = false;
+    render();
+  }
+}
+
+// Changing the role of an account that's already active - not a pending
+// registration. Reuses admin_review_registration() (it works on any
+// profile id regardless of current approval_status; a non-existent
+// pending approval_requests row just means that UPDATE matches nothing).
+async function promoteExistingUser(profileId) {
+  if (!supabaseClient || !isUuid(profileId)) return;
+
+  const account = state.staffAccounts.find((item) => item.id === profileId);
+  const roleSelect = document.querySelector(`#staff-role-${profileId}`);
+  const newRole = roleSelect?.value;
+  if (!newRole) return;
+
+  if (newRole === account?.role) {
+    showToast(`${account?.full_name || "This account"} is already ${newRole}.`, "info");
+    return;
+  }
+
+  const confirmed = await showConfirm(
+    `Change ${account?.full_name || account?.email || "this account"}'s role from ${account?.role || "its current role"} to ${newRole}?`,
+    "Change Role"
+  );
+  if (!confirmed) return;
+
+  isDataLoading = true;
+  render();
+
+  try {
+    const { error } = await supabaseClient.rpc("admin_review_registration", {
+      p_profile_id: profileId,
+      p_approve: true,
+      p_grant_role: newRole,
+      p_reason: null
+    });
+
+    if (error) {
+      showToast(friendlyError(error.message), "error");
+      return;
+    }
+
+    showToast(`${account?.full_name || account?.email} is now ${newRole}.`, "success");
+    await loadStaffAccounts();
     await loadRealTechnicians();
     saveState();
   } catch (err) {
@@ -2414,6 +2472,27 @@ async function loadRealApprovals() {
   }));
 }
 
+// Every account, not just the pending ones — this is how the CEO changes
+// an already-active account's role (promote a long-standing customer to
+// technician, move an agent to operator, and so on) instead of the
+// one-time grant approving a registration already covers.
+async function loadStaffAccounts() {
+  if (!supabaseClient || userRole() !== "admin") return;
+
+  const { data, error } = await supabaseClient
+    .from("profiles")
+    .select("id, full_name, email, role, approval_status")
+    .order("full_name", { ascending: true });
+
+  if (error) {
+    console.error(error);
+    showToast(`Could not load accounts: ${error.message}`, "error");
+    return;
+  }
+
+  state.staffAccounts = data || [];
+}
+
 // The admin console used to hold a hard-coded company id ("ABSL-COMPANY"),
 // so "Update Limit" never wrote anything. Load the real rows instead.
 // RLS does the scoping: a customer gets only their own company row, an
@@ -2656,6 +2735,7 @@ async function loadRealSupportData(options = {}) {
     companies: loadRealCompanies,
     callbacks: loadCallbackQueue,
     approvals: loadRealApprovals,
+    staffAccounts: loadStaffAccounts,
     notifications: loadRealNotifications,
     alerts: loadRealAdminAlerts,
     receipts: loadRealReceipts,
@@ -4412,6 +4492,8 @@ function adminListPreview(items, rowRenderer, seeAllHref, seeAllNoun, emptyMessa
 // One row renderer per list, shared between the compact dashboard preview
 // and that list's full page - the two used to duplicate this markup for
 // ticket cards too, which is exactly how they quietly drifted apart.
+const STAFF_ROLES = ["customer", "technician", "agent", "operator", "admin"];
+
 function approvalRowHtml(approval) {
   return `
     <div class="inventory-row">
@@ -4424,7 +4506,13 @@ function approvalRowHtml(approval) {
       <div class="action-row">
         ${
           approval.status === "pending"
-            ? `<button class="primary-button compact-button" type="button" data-approve="${escapeHtml(approval.id)}">Approve as ${escapeHtml(approval.requestedRole)}</button>
+            ? `<select id="approval-role-${escapeHtml(approval.id)}" aria-label="Role to grant">
+                 ${STAFF_ROLES.map(
+                   (role) =>
+                     `<option value="${role}" ${role === approval.requestedRole ? "selected" : ""}>${role}</option>`
+                 ).join("")}
+               </select>
+               <button class="primary-button compact-button" type="button" data-approve="${escapeHtml(approval.id)}">Approve</button>
                <button class="danger-button compact-button" type="button" data-reject="${escapeHtml(approval.id)}">Reject</button>`
             : `<span class="small muted">Reviewed</span>`
         }
@@ -4503,9 +4591,43 @@ function clientErrorRowHtml(err) {
   `;
 }
 
-// route -> { title, badge, items, rowRenderer, emptyMessage } for the five
+// Promoting an ALREADY-active account — separate from approvalRowHtml
+// above, which only ever handles a pending registration's one-time grant.
+// The admin's own row shows no control: changing your own role through
+// this list is exactly the footgun admin_review_registration() doesn't
+// guard against on its own (it only checks the caller IS an admin, not
+// that they aren't acting on themselves) — a second admin account is the
+// safe way to change an admin's role.
+function staffRoleRowHtml(profile) {
+  const isSelf = profile.id === currentProfile?.id;
+
+  return `
+    <div class="inventory-row">
+      <div>
+        <strong>${escapeHtml(profile.full_name || profile.email)}</strong>
+        <p class="small muted">${escapeHtml(profile.email)}</p>
+        <span class="badge ${profile.approval_status === "approved" ? "badge-ok" : "badge-muted"}">${escapeHtml(profile.approval_status)}</span>
+        <span class="badge badge-muted">${escapeHtml(profile.role)}</span>
+      </div>
+      <div class="action-row">
+        ${
+          isSelf
+            ? `<span class="small muted">This is you — use another admin account to change your own role.</span>`
+            : `<select id="staff-role-${escapeHtml(profile.id)}" aria-label="New role for ${escapeHtml(profile.full_name || profile.email)}">
+                 ${STAFF_ROLES.map(
+                   (role) => `<option value="${role}" ${role === profile.role ? "selected" : ""}>${role}</option>`
+                 ).join("")}
+               </select>
+               <button class="primary-button compact-button" type="button" data-promote-role="${escapeHtml(profile.id)}">Update Role</button>`
+        }
+      </div>
+    </div>
+  `;
+}
+
+// route -> { title, badge, items, rowRenderer, emptyMessage } for the six
 // "See all" pages above. One generic page renderer and one generic route
-// branch in render() use this instead of five near-identical copies.
+// branch in render() use this instead of six near-identical copies.
 function adminListRoutes() {
   return {
     approvals: {
@@ -4513,6 +4635,12 @@ function adminListRoutes() {
       items: state.approvals,
       rowRenderer: approvalRowHtml,
       emptyMessage: "No approval requests are waiting."
+    },
+    "staff-roles": {
+      title: "Manage Staff",
+      items: state.staffAccounts,
+      rowRenderer: staffRoleRowHtml,
+      emptyMessage: "No accounts yet."
     },
     notifications: {
       title: "Notifications",
@@ -4569,6 +4697,8 @@ function adminView() {
     <div class="action-row" style="margin-bottom: 20px; align-items: center;">
       <span class="small muted">• Click here to view service reports</span>
       <a class="secondary-button" href="reports.html">Reports</a>
+      <span class="small muted">• Promote or change the role of any account</span>
+      <a class="secondary-button" href="staff-roles.html">Manage Staff</a>
     </div>
     <section class="dashboard-grid">
       <article class="panel">
@@ -4582,6 +4712,20 @@ function adminView() {
           "approvals.html",
           "requests",
           "No approval requests are waiting."
+        )}
+      </article>
+
+      <article class="panel">
+        <div class="panel-title">
+          <h2>Manage Staff</h2>
+          <span class="badge badge-muted">${state.staffAccounts.length} accounts</span>
+        </div>
+        ${adminListPreview(
+          state.staffAccounts,
+          staffRoleRowHtml,
+          "staff-roles.html",
+          "accounts",
+          "No accounts yet."
         )}
       </article>
 
@@ -4974,6 +5118,10 @@ function bindEvents() {
 
   document.querySelectorAll("[data-reject]").forEach((button) => {
     button.onclick = () => approveUser(button.dataset.reject, "rejected");
+  });
+
+  document.querySelectorAll("[data-promote-role]").forEach((button) => {
+    button.onclick = () => promoteExistingUser(button.dataset.promoteRole);
   });
 
   document.querySelectorAll("[data-retry]").forEach((button) => {
