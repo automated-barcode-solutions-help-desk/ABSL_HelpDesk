@@ -3468,7 +3468,6 @@ function attachmentGallery(detail, { allowDelete = true } = {}) {
           // this up server-side regardless of what the UI offers.
           const canDelete =
             allowDelete &&
-            attachment.file_type !== "service_receipt" &&
             (attachment.uploaded_by === currentProfile?.id || userRole() === "admin");
           const deleteButton = canDelete
             ? `<button class="danger-button compact-button" type="button"
@@ -3510,6 +3509,7 @@ function attachmentGallery(detail, { allowDelete = true } = {}) {
                         <img src="${escapeHtml(attachment.url)}" alt="Service call receipt: ${name}" loading="lazy" />
                       </a>
                       <figcaption class="small muted">🧾 Service call receipt · ${name}${size}</figcaption>
+                      ${deleteButton}
                     </figure>`;
           }
 
