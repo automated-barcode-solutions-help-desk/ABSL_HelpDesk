@@ -1820,6 +1820,31 @@ async function assignTechnician(ticketId, technicianId, reason) {
   const ticket = state.tickets.find((item) => item.id === ticketId);
   if (!ticket || !supabaseClient || !isUuid(ticketId)) return;
 
+  // Freshest view of who has the job: the open detail, else the list.
+  const currentTechnicianId =
+    (ticketDetail.id === ticketId && ticketDetail.data?.ticket
+      ? ticketDetail.data.ticket.assigned_technician_id
+      : ticket.assignedTechnicianId) || "";
+  const nextTechnicianId = isUuid(technicianId) ? technicianId : "";
+
+  // "Assign" with "Unassigned" picked used to send an unassign for a job that
+  // had no technician: nothing changed, but it logged a hand-off anyway.
+  if (!nextTechnicianId && !currentTechnicianId) {
+    showToast("Choose a technician to assign.", "warning");
+    return;
+  }
+  if (nextTechnicianId && nextTechnicianId === currentTechnicianId) {
+    showToast(`${technicianNameById(nextTechnicianId)} already has this job.`, "info");
+    return;
+  }
+  if (!nextTechnicianId) {
+    const confirmed = await showConfirm(
+      `Take ${technicianNameById(currentTechnicianId)} off this job? It will have no technician until someone is assigned.`,
+      "Remove Technician"
+    );
+    if (!confirmed) return;
+  }
+
   isDataLoading = true;
   render();
 
@@ -4929,7 +4954,11 @@ function renderTicketDetail(ticket) {
   const callback = detail?.callback;
   const hasCoords = detail?.ticket?.location_lat != null && detail?.ticket?.location_lng != null;
   const nextStatuses = allowedStatusTransitions(role, ticketStatus);
-  const selectedTechnicianId = assignedTechnicianId || "";
+  // A technician on an unclaimed job can only take it themselves (the list
+  // holds just them), so the picker starts on them and "Assign" does what it
+  // says instead of submitting "Unassigned".
+  const selectedTechnicianId =
+    assignedTechnicianId || (role === "technician" && canReassign ? currentProfile?.id || "" : "");
 
   return `
     <section class="detail-grid" id="ticketDetail">
@@ -5181,7 +5210,7 @@ function renderTicketDetail(ticket) {
         </div>
         <button class="primary-button" type="button" data-assign-technician="${safeTicketId}" ${
                 technicianOptions.length ? "" : "disabled"
-              }>${selectedTechnicianId ? "Reassign" : "Assign"}</button>
+              }>${assignedTechnicianId ? "Reassign" : "Assign"}</button>
         ${technicianOptions.length ? "" : `<p class="small muted">No approved technician accounts yet.</p>`}`
             : ""
         }
