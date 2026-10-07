@@ -3459,6 +3459,13 @@ function jobNumbers(row) {
     .join("\n");
 }
 
+// Who created the ticket: the customer for a portal ticket, the staff
+// member for one logged by phone or as a self-job. report_jobs() returns
+// the creator's profile as customer_name / customer_email.
+function createdByName(row) {
+  return row.customer_name || row.customer_email || "";
+}
+
 // kind decides the column filter: "select" (dropdown of values), "text"
 // (contains) or "date" (one day). wide columns wrap and get more room.
 const REPORT_COLUMNS = {
@@ -3469,6 +3476,7 @@ const REPORT_COLUMNS = {
   referenceNumber: { label: "Reference Number", kind: "text", get: (r) => r.reference_number },
   numbers: { label: "Service Call / Installation / Reference Number", kind: "text", wide: true, get: jobNumbers },
   customer: { label: "Customer", kind: "select", get: (r) => r.company_name || r.customer_name || "" },
+  createdBy: { label: "Created By", kind: "select", get: createdByName },
   technician: { label: "Technician", kind: "select", get: (r) => r.technician_name || "Unassigned" },
   assignedTechnician: { label: "Assigned Technician", kind: "select", get: (r) => r.technician_name || "Unassigned" },
   jobType: { label: "Job Type", kind: "select", options: JOB_TYPE_LABELS, get: (r) => jobTypeLabel(r.job_type) },
@@ -3493,7 +3501,7 @@ const REPORT_TYPES = [
     label: "Technician Wise Report",
     requires: "technician",
     filters: ["technician", "dateRange", "serviceCall", "customer", "jobType", "jobStatus"],
-    columns: ["date", "serviceCall", "customer", "jobType", "jobStatus"],
+    columns: ["date", "serviceCall", "customer", "createdBy", "jobType", "jobStatus"],
     title: (c) => `Technician Report – ${c.technicianName}`
   },
   {
@@ -3511,7 +3519,7 @@ const REPORT_TYPES = [
       "referenceNumber",
       "jobStatus"
     ],
-    columns: ["date", "assignedTechnician", "jobType", "ticketNumber", "numbers", "jobStatus"],
+    columns: ["date", "createdBy", "assignedTechnician", "jobType", "ticketNumber", "numbers", "jobStatus"],
     title: (c) => `Customer Report – ${c.customerName}`
   },
   {
@@ -3519,7 +3527,7 @@ const REPORT_TYPES = [
     label: "Date Wise Report",
     requires: "period",
     filters: ["period", "customer", "technician", "jobType", "jobStatus", "serviceCall", "ticketNumber"],
-    columns: ["date", "serviceCall", "ticketNumber", "customer", "technician", "jobType", "jobStatus"],
+    columns: ["date", "serviceCall", "ticketNumber", "customer", "createdBy", "technician", "jobType", "jobStatus"],
     title: (c) => `Date Wise Report – ${c.periodLabel}`
   },
   {
@@ -3527,7 +3535,7 @@ const REPORT_TYPES = [
     label: "All Faults Report",
     jobType: "fault",
     filters: ["dateRange", "customer", "technician", "serviceCall", "ticketNumber", "jobStatus", "description"],
-    columns: ["date", "serviceCall", "ticketNumber", "customer", "technician", "faultDescription", "jobStatus"],
+    columns: ["date", "serviceCall", "ticketNumber", "customer", "createdBy", "technician", "faultDescription", "jobStatus"],
     title: () => "Fault Service Report"
   },
   {
@@ -3540,6 +3548,7 @@ const REPORT_TYPES = [
       "serviceCall",
       "ticketNumber",
       "customer",
+      "createdBy",
       "technician",
       "jobType",
       "jobStatus",
@@ -3570,6 +3579,7 @@ const REPORT_TYPES = [
       "installationNumber",
       "referenceNumber",
       "customer",
+      "createdBy",
       "technician",
       "jobType",
       "jobStatus",
@@ -4603,7 +4613,7 @@ async function openReportSummaryModal(reportId) {
         ${statusBadge(report.status)}
       </div>
       <dl class="detail-facts">
-        <div><dt>${report.caller_name ? "Logged by" : "Customer"}</dt><dd>${escapeHtml(report.customer_name || report.customer_email || "—")}</dd></div>
+        <div><dt>Created by</dt><dd>${escapeHtml(createdByName(report) || "—")}</dd></div>
         ${
           report.caller_name
             ? `<div><dt>Caller</dt><dd>${escapeHtml(report.caller_name)}${report.caller_phone ? ` · ${escapeHtml(report.caller_phone)}` : ""}</dd></div>`
