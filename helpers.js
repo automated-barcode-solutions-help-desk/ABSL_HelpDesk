@@ -76,7 +76,7 @@ function statusLabel(status) {
 // separate from priority (how urgent) and status (how far along).
 function normalizeJobType(jobType) {
   const value = String(jobType || "").toLowerCase();
-  if (value === "service" || value === "installation") return value;
+  if (value === "service" || value === "installation" || value === "other") return value;
   return "fault";
 }
 
@@ -84,9 +84,26 @@ function jobTypeLabel(jobType) {
   const map = {
     service: "Service",
     fault: "Fault",
-    installation: "Installation"
+    installation: "Installation",
+    other: "Other"
   };
   return map[normalizeJobType(jobType)];
+}
+
+const JOB_TYPE_LABELS = ["Fault", "Installation", "Service", "Other"];
+const JOB_STATUS_LABELS = ["New", "Assigned", "Ongoing", "Resolved", "Closed"];
+
+/**
+ * The status a report shows. "Assigned" isn't a stored status - it's a new
+ * ticket that already has a technician - so it's derived here, the one
+ * place every report and export takes it from.
+ */
+function jobStatusLabel(status, technicianId) {
+  if (status === "new") return technicianId ? "Assigned" : "New";
+  if (status === "in_progress") return "Ongoing";
+  if (status === "resolved") return "Resolved";
+  if (status === "closed") return "Closed";
+  return "New";
 }
 
 function formatProblemDescription(selectedProblems, customDescription) {
@@ -299,6 +316,151 @@ function friendlyError(message) {
   return text || "Something went wrong.";
 }
 
+/* ---------------------------------------------------------------------
+   Reports: dates, periods, and Excel-style filtering/sorting.
+   Dates are compared as local "YYYY-MM-DD" keys - the calendar day the
+   person using the report sees - never via UTC, which would move a job
+   logged just after midnight in Colombo onto the previous day.
+   --------------------------------------------------------------------- */
+
+const MONTH_NAMES = [
+  "January", "February", "March", "April", "May", "June",
+  "July", "August", "September", "October", "November", "December"
+];
+
+/** "2026-10-07" for a Date (local calendar day). */
+function localDateKey(value) {
+  const date = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${date.getFullYear()}-${month}-${day}`;
+}
+
+/** A "YYYY-MM-DD" key back to a local Date at midnight (not UTC). */
+function dateFromKey(key) {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(key || ""));
+  if (!match) return null;
+  return new Date(Number(match[1]), Number(match[2]) - 1, Number(match[3]));
+}
+
+/** "07 October 2026" - for report titles and the generated date. */
+function formatLongDate(value) {
+  const date = typeof value === "string" && /^\d{4}-\d{2}-\d{2}$/.test(value) ? dateFromKey(value) : new Date(value);
+  if (!date || Number.isNaN(date.getTime())) return "";
+  return `${String(date.getDate()).padStart(2, "0")} ${MONTH_NAMES[date.getMonth()]} ${date.getFullYear()}`;
+}
+
+/** "07 Oct 2026" - for table cells. */
+function formatShortDate(value) {
+  const long = formatLongDate(value);
+  if (!long) return "";
+  const [day, month, year] = long.split(" ");
+  return `${day} ${month.slice(0, 3)} ${year}`;
+}
+
+/**
+ * Turns a Date Wise Report choice into an inclusive { from, to } pair of
+ * date keys. Weeks run Monday to Sunday. `now` is injectable for tests.
+ */
+function reportPeriod(kind, { date = "", from = "", to = "" } = {}, now = new Date()) {
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+
+  if (kind === "today") {
+    const key = localDateKey(today);
+    return { from: key, to: key };
+  }
+
+  if (kind === "week") {
+    const sinceMonday = (today.getDay() + 6) % 7;
+    const start = new Date(today.getFullYear(), today.getMonth(), today.getDate() - sinceMonday);
+    const end = new Date(start.getFullYear(), start.getMonth(), start.getDate() + 6);
+    return { from: localDateKey(start), to: localDateKey(end) };
+  }
+
+  if (kind === "month") {
+    const start = new Date(today.getFullYear(), today.getMonth(), 1);
+    const end = new Date(today.getFullYear(), today.getMonth() + 1, 0);
+    return { from: localDateKey(start), to: localDateKey(end) };
+  }
+
+  if (kind === "single") {
+    return { from: date, to: date };
+  }
+
+  return { from, to };
+}
+
+/** "07 October 2026", "01 October 2026 to 31 October 2026", "From …", "Up to …". */
+function reportPeriodLabel(from, to) {
+  if (from && to) return from === to ? formatLongDate(from) : `${formatLongDate(from)} to ${formatLongDate(to)}`;
+  if (from) return `From ${formatLongDate(from)}`;
+  if (to) return `Up to ${formatLongDate(to)}`;
+  return "";
+}
+
+/** Inclusive range check on date keys; empty bounds are open. */
+function dateKeyInRange(key, from, to) {
+  if (!key) return !from && !to;
+  if (from && key < from) return false;
+  if (to && key > to) return false;
+  return true;
+}
+
+/**
+ * Excel-style column filters plus a free-text search. Rows look like
+ * { cells: { [columnKey]: { text, dateKey } } }; filters is
+ * { [columnKey]: { type: "select" | "text" | "date", value } }. A row
+ * must match every active filter AND (if given) contain the search text
+ * in at least one cell.
+ */
+function filterReportRows(rows, filters = {}, search = "") {
+  const needle = String(search || "").trim().toLowerCase();
+  const active = Object.entries(filters).filter(
+    ([, filter]) => filter && String(filter.value ?? "").trim() !== ""
+  );
+
+  return rows.filter((row) => {
+    for (const [key, filter] of active) {
+      const cell = row.cells[key] || {};
+      const wanted = String(filter.value).trim().toLowerCase();
+      const text = String(cell.text ?? "").toLowerCase();
+
+      if (filter.type === "select" && text !== wanted) return false;
+      if (filter.type === "text" && !text.includes(wanted)) return false;
+      if (filter.type === "date" && cell.dateKey !== String(filter.value).trim()) return false;
+    }
+
+    if (!needle) return true;
+    return Object.values(row.cells).some((cell) => String(cell.text ?? "").toLowerCase().includes(needle));
+  });
+}
+
+/**
+ * Sorts by one column. Uses the cell's `sort` value when it has one (a
+ * timestamp for dates) so dates sort chronologically, otherwise a natural
+ * text compare ("SC-2" before "SC-10"). Blank cells always go last.
+ */
+function sortReportRows(rows, key, direction = "asc") {
+  if (!key) return rows.slice();
+  const factor = direction === "desc" ? -1 : 1;
+
+  return rows.slice().sort((a, b) => {
+    const left = a.cells[key] || {};
+    const right = b.cells[key] || {};
+    const x = left.sort ?? left.text ?? "";
+    const y = right.sort ?? right.text ?? "";
+    const xEmpty = x === "" || x === null;
+    const yEmpty = y === "" || y === null;
+
+    if (xEmpty && yEmpty) return 0;
+    if (xEmpty) return 1;
+    if (yEmpty) return -1;
+    if (typeof x === "number" && typeof y === "number") return (x - y) * factor;
+    return String(x).localeCompare(String(y), undefined, { numeric: true, sensitivity: "base" }) * factor;
+  });
+}
+
 if (typeof module !== "undefined" && module.exports) {
   module.exports = {
     UPLOAD_LIMITS,
@@ -310,6 +472,18 @@ if (typeof module !== "undefined" && module.exports) {
     statusLabel,
     normalizeJobType,
     jobTypeLabel,
+    JOB_TYPE_LABELS,
+    JOB_STATUS_LABELS,
+    jobStatusLabel,
+    localDateKey,
+    dateFromKey,
+    formatLongDate,
+    formatShortDate,
+    reportPeriod,
+    reportPeriodLabel,
+    dateKeyInRange,
+    filterReportRows,
+    sortReportRows,
     formatProblemDescription,
     allowedStatusTransitions,
     formatBytes,

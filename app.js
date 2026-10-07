@@ -363,6 +363,8 @@ function openResolveTicketModal(ticketId) {
   const card = document.getElementById("modalCard");
   if (!overlay || !card) return;
 
+  const existing = ticketDetail.id === ticketId ? ticketDetail.data?.ticket : null;
+
   card.innerHTML = `
     <h3>Resolve This Ticket</h3>
     <p class="muted small">Record what you found and what you did, and attach the service call receipt, before marking this job resolved. The customer will see your resolution notes and the service call number.</p>
@@ -370,6 +372,18 @@ function openResolveTicketModal(ticketId) {
       <div class="field">
         <label for="resolve-service-call-number">Service call number</label>
         <input id="resolve-service-call-number" name="serviceCallNumber" required maxlength="60" placeholder="e.g. SC-2026-0042" />
+      </div>
+      <div class="form-grid">
+        <div class="field">
+          <label for="resolve-installation-number">Installation number (optional)</label>
+          <input id="resolve-installation-number" name="installationNumber" maxlength="60"
+                 value="${escapeHtml(existing?.installation_number || "")}" />
+        </div>
+        <div class="field">
+          <label for="resolve-reference-number">Reference number (optional)</label>
+          <input id="resolve-reference-number" name="referenceNumber" maxlength="60"
+                 value="${escapeHtml(existing?.reference_number || "")}" />
+        </div>
       </div>
       <div class="field">
         <label for="resolve-notes">Resolution notes</label>
@@ -400,6 +414,8 @@ function openResolveTicketModal(ticketId) {
     event.preventDefault();
     const form = new FormData(event.target);
     const serviceCallNumber = String(form.get("serviceCallNumber") || "").trim();
+    const installationNumber = String(form.get("installationNumber") || "").trim();
+    const referenceNumber = String(form.get("referenceNumber") || "").trim();
     const resolutionNotes = String(form.get("resolutionNotes") || "").trim();
     const receiptPhoto = form.get("receiptPhoto");
     const additionalPhotos = form.getAll("additionalPhotos").filter((file) => file && file.size > 0);
@@ -449,6 +465,23 @@ function openResolveTicketModal(ticketId) {
 
     overlay.classList.remove("is-visible");
     const resolved = await updateTicketStatus(ticketId, "resolved", serviceCallNumber, resolutionNotes);
+
+    // Separate fields from the service call number (see 0028), saved once
+    // the resolve itself has gone through. Only what actually changed.
+    const numberChanges = {};
+    if (installationNumber !== (existing?.installation_number || "")) {
+      numberChanges.installation_number = installationNumber || null;
+    }
+    if (referenceNumber !== (existing?.reference_number || "")) {
+      numberChanges.reference_number = referenceNumber || null;
+    }
+    if (resolved && Object.keys(numberChanges).length) {
+      const saved = await updateRecord("tickets", ticketId, numberChanges);
+      if (saved) {
+        await loadTicketDetail(ticketId);
+        render();
+      }
+    }
 
     // The receipt photo above had to go up before change_ticket_status()
     // would even attempt the resolve - if that attempt then failed outright,
@@ -515,6 +548,7 @@ function openLogTicketModal() {
           <option value="service">Service</option>
           <option value="fault">Fault</option>
           <option value="installation">Installation</option>
+          <option value="other">Other</option>
         </select>
       </div>
       <div class="field">
@@ -638,8 +672,8 @@ function openLogTicketModal() {
       showToast("That phone number doesn't look right — try 0771234567.", "warning");
       return;
     }
-    if (!["service", "fault", "installation"].includes(jobType)) {
-      showToast("Choose a job type — Service, Fault or Installation.", "warning");
+    if (!["service", "fault", "installation", "other"].includes(jobType)) {
+      showToast("Choose a job type — Service, Fault, Installation or Other.", "warning");
       return;
     }
     if (title.length < 3) {
@@ -2221,14 +2255,32 @@ async function updateTicketDetails(event, ticketId) {
   isDataLoading = true;
   render();
 
+  const changes = {
+    title: values.title,
+    priority: normalizePriority(values.priority).toLowerCase(),
+    location_name: values.location,
+    site_contact_phone: siteContactPhone || null,
+    wants_callback: values.callback
+  };
+  // Only on the staff version of the form - customers don't record these -
+  // and only when changed, so an edit that doesn't touch them never
+  // depends on the columns 0028 adds.
+  const current = ticketDetail.id === ticketId ? ticketDetail.data?.ticket || {} : {};
+  if (data.has("installationNumber")) {
+    const installationNumber = String(data.get("installationNumber") || "").trim();
+    if (installationNumber !== (current.installation_number || "")) {
+      changes.installation_number = installationNumber || null;
+    }
+  }
+  if (data.has("referenceNumber")) {
+    const referenceNumber = String(data.get("referenceNumber") || "").trim();
+    if (referenceNumber !== (current.reference_number || "")) {
+      changes.reference_number = referenceNumber || null;
+    }
+  }
+
   try {
-    const updated = await updateRecord("tickets", ticketId, {
-      title: values.title,
-      priority: normalizePriority(values.priority).toLowerCase(),
-      location_name: values.location,
-      site_contact_phone: siteContactPhone || null,
-      wants_callback: values.callback
-    });
+    const updated = await updateRecord("tickets", ticketId, changes);
 
     if (!updated) return;
 
@@ -3374,287 +3426,1147 @@ function ticketsPage() {
   `;
 }
 
-// Not loaded as part of any portal's dashboard data - this is a
-// deliberately on-demand search (report_search() caps at 500 rows and
-// still returns everything by default with no filter, which is too much
-// to dump onto the screen unasked). State lives outside `state` itself so
-// a stale search result never gets persisted to localStorage.
-let reportFilters = {
-  customer: "",
-  serviceCallNumber: "",
-  dateFrom: "",
-  dateTo: "",
-  status: "all",
-  priority: "all",
-  technicianId: "all",
-  jobType: "all"
+// --- Reports ------------------------------------------------------------
+// Six report types over one dataset: report_jobs() (0028) returns every job
+// with its customer, technician, the four separate numbers, technician
+// notes, resolution and resolved date. Everything after that - the report's
+// own filters, the Excel-style column filters, search and sort - runs here
+// in the browser, so the preview, the .xlsx download and the printout are
+// always built from the exact same filtered rows.
+
+const REPORT_COMPANY_LINE = "ABSL – Automated Barcode Solutions (Pvt) Ltd";
+
+function describeJob(row) {
+  const title = String(row.title || "").trim();
+  const description = String(row.description || "").trim();
+  if (!description || description === title) return title;
+  if (!title || description.startsWith(title)) return description;
+  return `${title}\n${description}`;
+}
+
+function jobNumbers(row) {
+  return [
+    row.service_call_number ? `Service Call: ${row.service_call_number}` : "",
+    row.installation_number ? `Installation: ${row.installation_number}` : "",
+    row.reference_number ? `Reference: ${row.reference_number}` : ""
+  ]
+    .filter(Boolean)
+    .join("\n");
+}
+
+// kind decides the column filter: "select" (dropdown of values), "text"
+// (contains) or "date" (one day). wide columns wrap and get more room.
+const REPORT_COLUMNS = {
+  date: { label: "Date", kind: "date", get: (r) => r.created_at },
+  ticketNumber: { label: "Ticket Number", kind: "text", get: (r) => r.ticket_number },
+  serviceCall: { label: "Service Call Number", kind: "text", get: (r) => r.service_call_number },
+  installationNumber: { label: "Installation Number", kind: "text", get: (r) => r.installation_number },
+  referenceNumber: { label: "Reference Number", kind: "text", get: (r) => r.reference_number },
+  numbers: { label: "Service Call / Installation / Reference Number", kind: "text", wide: true, get: jobNumbers },
+  customer: { label: "Customer", kind: "select", get: (r) => r.company_name || r.customer_name || "" },
+  technician: { label: "Technician", kind: "select", get: (r) => r.technician_name || "Unassigned" },
+  assignedTechnician: { label: "Assigned Technician", kind: "select", get: (r) => r.technician_name || "Unassigned" },
+  jobType: { label: "Job Type", kind: "select", options: JOB_TYPE_LABELS, get: (r) => jobTypeLabel(r.job_type) },
+  jobStatus: {
+    label: "Job Status",
+    kind: "select",
+    options: JOB_STATUS_LABELS,
+    get: (r) => jobStatusLabel(r.status, r.technician_id)
+  },
+  faultDescription: { label: "Fault / Job Description", kind: "text", wide: true, get: describeJob },
+  description: { label: "Job Description", kind: "text", wide: true, get: describeJob },
+  technicianNotes: { label: "Technician Notes", kind: "text", wide: true, get: (r) => r.technician_notes },
+  resolution: { label: "Resolution", kind: "text", wide: true, get: (r) => r.resolution_notes },
+  resolvedDate: { label: "Resolved Date", kind: "date", get: (r) => r.resolved_at }
 };
-let reportResults = [];
-let reportSearched = false;
-let isReportLoading = false;
+
+// requires: the one choice a report can't run without. filters: the report
+// filters shown for it, in order. columns: the table, in order.
+const REPORT_TYPES = [
+  {
+    key: "technician",
+    label: "Technician Wise Report",
+    requires: "technician",
+    filters: ["technician", "dateRange", "serviceCall", "customer", "jobType", "jobStatus"],
+    columns: ["date", "serviceCall", "customer", "jobType", "jobStatus"],
+    title: (c) => `Technician Report – ${c.technicianName}`
+  },
+  {
+    key: "customer",
+    label: "Customer Wise Report",
+    requires: "customer",
+    filters: [
+      "customer",
+      "dateRange",
+      "technician",
+      "jobType",
+      "ticketNumber",
+      "serviceCall",
+      "installationNumber",
+      "referenceNumber",
+      "jobStatus"
+    ],
+    columns: ["date", "assignedTechnician", "jobType", "ticketNumber", "numbers", "jobStatus"],
+    title: (c) => `Customer Report – ${c.customerName}`
+  },
+  {
+    key: "date",
+    label: "Date Wise Report",
+    requires: "period",
+    filters: ["period", "customer", "technician", "jobType", "jobStatus", "serviceCall", "ticketNumber"],
+    columns: ["date", "serviceCall", "ticketNumber", "customer", "technician", "jobType", "jobStatus"],
+    title: (c) => `Date Wise Report – ${c.periodLabel}`
+  },
+  {
+    key: "faults",
+    label: "All Faults Report",
+    jobType: "fault",
+    filters: ["dateRange", "customer", "technician", "serviceCall", "ticketNumber", "jobStatus", "description"],
+    columns: ["date", "serviceCall", "ticketNumber", "customer", "technician", "faultDescription", "jobStatus"],
+    title: () => "Fault Service Report"
+  },
+  {
+    key: "serviceCall",
+    label: "Service Call Number Report",
+    requires: "serviceCall",
+    filters: ["serviceCall", "dateRange", "customer", "technician", "jobType", "jobStatus"],
+    columns: [
+      "date",
+      "serviceCall",
+      "ticketNumber",
+      "customer",
+      "technician",
+      "jobType",
+      "jobStatus",
+      "technicianNotes",
+      "resolution",
+      "resolvedDate"
+    ],
+    title: (c) => `Service Call Report – ${c.serviceCall}`
+  },
+  {
+    key: "all",
+    label: "All Jobs Report",
+    filters: [
+      "dateRange",
+      "ticketNumber",
+      "serviceCall",
+      "installationNumber",
+      "referenceNumber",
+      "customer",
+      "technician",
+      "jobType",
+      "jobStatus"
+    ],
+    columns: [
+      "date",
+      "ticketNumber",
+      "serviceCall",
+      "installationNumber",
+      "referenceNumber",
+      "customer",
+      "technician",
+      "jobType",
+      "jobStatus",
+      "description",
+      "technicianNotes",
+      "resolution",
+      "resolvedDate"
+    ],
+    title: () => "All Jobs Report"
+  }
+];
+
+function reportType(key) {
+  return REPORT_TYPES.find((type) => type.key === key) || null;
+}
+
+function emptyReportParams() {
+  return {
+    technicianId: "",
+    customerId: "",
+    jobType: "",
+    jobStatus: "",
+    dateFrom: "",
+    dateTo: "",
+    period: "today",
+    singleDate: "",
+    serviceCall: "",
+    ticketNumber: "",
+    installationNumber: "",
+    referenceNumber: "",
+    description: ""
+  };
+}
+
+function defaultReportUi() {
+  return {
+    typeKey: "",
+    params: emptyReportParams(),
+    generated: null,
+    columnFilters: {},
+    search: "",
+    sortKey: "",
+    sortDir: "asc",
+    fullscreen: false
+  };
+}
+
+// Kept outside `state` on purpose: report data is never written to
+// localStorage, and a stale report is never restored on the next visit.
+let reportUi = defaultReportUi();
+let reportData = [];
+let reportBaseRows = [];
+let reportDataStatus = "idle"; // idle | loading | ready | error
+let reportDataError = "";
+let reportDataLoadedAt = null;
+
+async function loadReportData({ force = false } = {}) {
+  if (!supabaseClient) {
+    reportDataStatus = "error";
+    reportDataError = "Not connected to the database.";
+    return;
+  }
+  if (reportDataStatus === "loading") return;
+  if (reportDataStatus === "ready" && !force) return;
+
+  reportDataStatus = "loading";
+  render();
+
+  try {
+    const { data, error } = await supabaseClient.rpc("report_jobs");
+    if (error) throw error;
+    reportData = data || [];
+    reportDataStatus = "ready";
+    reportDataError = "";
+    reportDataLoadedAt = new Date();
+  } catch (err) {
+    const message = String(err?.message || err || "");
+    reportDataStatus = "error";
+    reportDataError = /report_jobs/i.test(message)
+      ? "Reports need database update 0028 (0028_reports_numbers_and_other_job_type.sql). Ask your admin to run it in Supabase."
+      : friendlyError(err);
+  }
+}
+
+function reportTechnicianOptions() {
+  const byId = new Map();
+  (state.technicians || []).forEach((tech) => byId.set(tech.id, tech.name));
+  reportData.forEach((row) => {
+    if (row.technician_id && !byId.has(row.technician_id)) {
+      byId.set(row.technician_id, row.technician_name || "Former technician");
+    }
+  });
+  return [...byId.entries()]
+    .map(([id, name]) => ({ id, name: name || "Technician" }))
+    .sort((a, b) => a.name.localeCompare(b.name));
+}
+
+function reportCustomerOptions() {
+  const byId = new Map();
+  (state.companies || []).forEach((company) => byId.set(company.id, company.name));
+  reportData.forEach((row) => {
+    if (row.company_id && !byId.has(row.company_id)) {
+      byId.set(row.company_id, row.company_name || "Unknown customer");
+    }
+  });
+  return [...byId.entries()]
+    .map(([id, name]) => ({ id, name: name || "Customer" }))
+    .sort((a, b) => a.name.localeCompare(b.name));
+}
+
+function reportServiceCallOptions() {
+  return [...new Set(reportData.map((row) => String(row.service_call_number || "").trim()).filter(Boolean))].sort(
+    (a, b) => a.localeCompare(b, undefined, { numeric: true })
+  );
+}
+
+function reportRange(type, params) {
+  if (type.requires === "period") {
+    return reportPeriod(params.period, { date: params.singleDate, from: params.dateFrom, to: params.dateTo });
+  }
+  return { from: params.dateFrom, to: params.dateTo };
+}
+
+function reportContext(type, params) {
+  const range = reportRange(type, params);
+  const technician =
+    params.technicianId === "unassigned"
+      ? { name: "Unassigned" }
+      : reportTechnicianOptions().find((tech) => tech.id === params.technicianId);
+  const customer = reportCustomerOptions().find((company) => company.id === params.customerId);
+
+  return {
+    technicianName: technician?.name || "",
+    customerName: customer?.name || "",
+    periodLabel: reportPeriodLabel(range.from, range.to),
+    serviceCall: params.serviceCall,
+    range
+  };
+}
+
+function applyReportParams(type, params, rows) {
+  const uses = (name) => type.filters.includes(name);
+  const range = reportRange(type, params);
+  const usesRange = uses("dateRange") || uses("period");
+  const contains = (value, needle) =>
+    !needle || String(value || "").toLowerCase().includes(String(needle).trim().toLowerCase());
+
+  return rows.filter((row) => {
+    if (type.jobType && normalizeJobType(row.job_type) !== type.jobType) return false;
+
+    if (uses("technician") && params.technicianId) {
+      if (params.technicianId === "unassigned" ? row.technician_id : row.technician_id !== params.technicianId) {
+        return false;
+      }
+    }
+    if (uses("customer") && params.customerId && row.company_id !== params.customerId) return false;
+    if (uses("jobType") && params.jobType && jobTypeLabel(row.job_type) !== params.jobType) return false;
+    if (uses("jobStatus") && params.jobStatus && jobStatusLabel(row.status, row.technician_id) !== params.jobStatus) {
+      return false;
+    }
+    if (usesRange && (range.from || range.to) && !dateKeyInRange(localDateKey(row.created_at), range.from, range.to)) {
+      return false;
+    }
+    if (uses("serviceCall") && !contains(row.service_call_number, params.serviceCall)) return false;
+    if (uses("ticketNumber") && !contains(row.ticket_number, params.ticketNumber)) return false;
+    if (uses("installationNumber") && !contains(row.installation_number, params.installationNumber)) return false;
+    if (uses("referenceNumber") && !contains(row.reference_number, params.referenceNumber)) return false;
+    if (uses("description") && !contains(describeJob(row), params.description)) return false;
+    return true;
+  });
+}
+
+function reportParamSummary(type, params, context) {
+  const uses = (name) => type.filters.includes(name);
+  const parts = [];
+
+  if (type.jobType) parts.push(`Job Type: ${jobTypeLabel(type.jobType)}`);
+  if (uses("period") && context.periodLabel) parts.push(`Period: ${context.periodLabel}`);
+  if (uses("technician") && params.technicianId) parts.push(`Technician: ${context.technicianName}`);
+  if (uses("customer") && params.customerId) parts.push(`Customer: ${context.customerName}`);
+  if (uses("jobType") && params.jobType) parts.push(`Job Type: ${params.jobType}`);
+  if (uses("jobStatus") && params.jobStatus) parts.push(`Job Status: ${params.jobStatus}`);
+  if (uses("dateRange") && (params.dateFrom || params.dateTo)) {
+    parts.push(`Date: ${reportPeriodLabel(params.dateFrom, params.dateTo)}`);
+  }
+  if (uses("serviceCall") && params.serviceCall) parts.push(`Service Call No: ${params.serviceCall}`);
+  if (uses("ticketNumber") && params.ticketNumber) parts.push(`Ticket No: ${params.ticketNumber}`);
+  if (uses("installationNumber") && params.installationNumber) {
+    parts.push(`Installation No: ${params.installationNumber}`);
+  }
+  if (uses("referenceNumber") && params.referenceNumber) parts.push(`Reference No: ${params.referenceNumber}`);
+  if (uses("description") && params.description) parts.push(`Description contains: ${params.description}`);
+  return parts;
+}
+
+function buildReportRow(raw, columnKeys) {
+  const cells = {};
+  for (const key of columnKeys) {
+    const column = REPORT_COLUMNS[key];
+    const value = column.get(raw);
+
+    if (column.kind === "date") {
+      const date = value ? new Date(value) : null;
+      cells[key] =
+        date && !Number.isNaN(date.getTime())
+          ? { text: formatShortDate(date), sort: date.getTime(), dateKey: localDateKey(date), date }
+          : { text: "", sort: "", dateKey: "" };
+    } else {
+      cells[key] = { text: String(value ?? "").trim() };
+    }
+  }
+  return { id: raw.id, cells };
+}
+
+function buildGeneratedReport(type, params) {
+  const context = reportContext(type, params);
+  reportBaseRows = applyReportParams(type, params, reportData).map((raw) => buildReportRow(raw, type.columns));
+  reportUi.generated = {
+    typeKey: type.key,
+    params: { ...params },
+    title: type.title(context),
+    generatedAt: new Date(),
+    paramSummary: reportParamSummary(type, params, context)
+  };
+}
+
+function currentReportRows() {
+  const type = reportType(reportUi.generated?.typeKey);
+  if (!type) return [];
+
+  const filters = {};
+  for (const [key, value] of Object.entries(reportUi.columnFilters)) {
+    if (type.columns.includes(key)) filters[key] = { type: REPORT_COLUMNS[key].kind, value };
+  }
+  return sortReportRows(filterReportRows(reportBaseRows, filters, reportUi.search), reportUi.sortKey, reportUi.sortDir);
+}
+
+function appliedFiltersText() {
+  const generated = reportUi.generated;
+  const type = reportType(generated?.typeKey);
+  if (!type) return "";
+
+  const parts = [...generated.paramSummary];
+  for (const [key, value] of Object.entries(reportUi.columnFilters)) {
+    if (!value || !type.columns.includes(key)) continue;
+    const column = REPORT_COLUMNS[key];
+    parts.push(`${column.label}: ${column.kind === "date" ? formatLongDate(value) : value}`);
+  }
+  if (reportUi.search.trim()) parts.push(`Search: "${reportUi.search.trim()}"`);
+  return parts.length ? parts.join(" · ") : "None (all records)";
+}
+
+function reportCountText(shown) {
+  const total = reportBaseRows.length;
+  const noun = total === 1 ? "record" : "records";
+  return shown === total ? `${total} ${noun}` : `Showing ${shown} of ${total} ${noun}`;
+}
+
+// --- Reports: page ---------------------------------------------------------
+
+function reportSelectField(id, name, label, options, value, placeholder) {
+  return `
+    <div class="field">
+      <label for="${id}">${escapeHtml(label)}</label>
+      <select id="${id}" name="${name}">
+        <option value="">${escapeHtml(placeholder)}</option>
+        ${options
+          .map(
+            (option) =>
+              `<option value="${escapeHtml(option.value)}" ${option.value === value ? "selected" : ""}>${escapeHtml(option.label)}</option>`
+          )
+          .join("")}
+      </select>
+    </div>`;
+}
+
+function reportInputField(id, name, label, value, placeholder, extra = "") {
+  return `
+    <div class="field">
+      <label for="${id}">${escapeHtml(label)}</label>
+      <input id="${id}" name="${name}" value="${escapeHtml(value)}" placeholder="${escapeHtml(placeholder)}" maxlength="80" ${extra} />
+    </div>`;
+}
+
+function reportFilterField(name, type) {
+  const p = reportUi.params;
+  const required = type.requires === name;
+
+  switch (name) {
+    case "technician": {
+      const options = reportTechnicianOptions().map((tech) => ({ value: tech.id, label: tech.name }));
+      if (!required) options.unshift({ value: "unassigned", label: "Unassigned" });
+      return reportSelectField(
+        "rp-technician",
+        "technicianId",
+        required ? "Technician *" : "Technician",
+        options,
+        p.technicianId,
+        required ? "Select a technician…" : "All"
+      );
+    }
+    case "customer":
+      return reportSelectField(
+        "rp-customer",
+        "customerId",
+        required ? "Customer *" : "Customer",
+        reportCustomerOptions().map((company) => ({ value: company.id, label: company.name })),
+        p.customerId,
+        required ? "Select a customer…" : "All"
+      );
+    case "jobType":
+      return reportSelectField(
+        "rp-job-type",
+        "jobType",
+        "Job Type",
+        JOB_TYPE_LABELS.map((label) => ({ value: label, label })),
+        p.jobType,
+        "All"
+      );
+    case "jobStatus":
+      return reportSelectField(
+        "rp-job-status",
+        "jobStatus",
+        "Job Status",
+        JOB_STATUS_LABELS.map((label) => ({ value: label, label })),
+        p.jobStatus,
+        "All"
+      );
+    case "dateRange":
+      return `
+        <div class="field">
+          <label for="rp-date-from">From Date</label>
+          <input id="rp-date-from" name="dateFrom" type="date" value="${escapeHtml(p.dateFrom)}" />
+        </div>
+        <div class="field">
+          <label for="rp-date-to">To Date</label>
+          <input id="rp-date-to" name="dateTo" type="date" value="${escapeHtml(p.dateTo)}" />
+        </div>`;
+    case "period": {
+      const periods = [
+        ["today", "Today"],
+        ["week", "This week"],
+        ["month", "This month"],
+        ["single", "Single date"],
+        ["custom", "Custom date range"]
+      ];
+      return `
+        <div class="field">
+          <label for="rp-period">Period *</label>
+          <select id="rp-period" name="period">
+            ${periods
+              .map(([value, label]) => `<option value="${value}" ${p.period === value ? "selected" : ""}>${label}</option>`)
+              .join("")}
+          </select>
+        </div>
+        <div class="field" data-period-field="single" ${p.period === "single" ? "" : "hidden"}>
+          <label for="rp-single-date">Date</label>
+          <input id="rp-single-date" name="singleDate" type="date" value="${escapeHtml(p.singleDate)}" />
+        </div>
+        <div class="field" data-period-field="custom" ${p.period === "custom" ? "" : "hidden"}>
+          <label for="rp-date-from">From Date</label>
+          <input id="rp-date-from" name="dateFrom" type="date" value="${escapeHtml(p.dateFrom)}" />
+        </div>
+        <div class="field" data-period-field="custom" ${p.period === "custom" ? "" : "hidden"}>
+          <label for="rp-date-to">To Date</label>
+          <input id="rp-date-to" name="dateTo" type="date" value="${escapeHtml(p.dateTo)}" />
+        </div>`;
+    }
+    case "serviceCall":
+      return `
+        ${reportInputField(
+          "rp-service-call",
+          "serviceCall",
+          required ? "Service Call No *" : "Service Call No",
+          p.serviceCall,
+          required ? "Type or pick - part of a number works" : "Search",
+          'list="rp-service-call-options" autocomplete="off"'
+        )}
+        <datalist id="rp-service-call-options">
+          ${reportServiceCallOptions()
+            .map((number) => `<option value="${escapeHtml(number)}"></option>`)
+            .join("")}
+        </datalist>`;
+    case "ticketNumber":
+      return reportInputField("rp-ticket-number", "ticketNumber", "Ticket No", p.ticketNumber, "Search");
+    case "installationNumber":
+      return reportInputField("rp-installation-number", "installationNumber", "Installation No", p.installationNumber, "Search");
+    case "referenceNumber":
+      return reportInputField("rp-reference-number", "referenceNumber", "Reference No", p.referenceNumber, "Search");
+    case "description":
+      return reportInputField("rp-description", "description", "Fault / Job Description", p.description, "Contains…");
+    default:
+      return "";
+  }
+}
+
+function reportDataNotice() {
+  if (reportDataStatus === "loading" || reportDataStatus === "idle") {
+    return `<p class="small muted report-data-status">Loading job data…</p>`;
+  }
+  if (reportDataStatus === "error") {
+    return `<div class="notice report-data-status">${escapeHtml(reportDataError)}</div>`;
+  }
+  const time = reportDataLoadedAt
+    ? reportDataLoadedAt.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" })
+    : "";
+  return `<p class="small muted report-data-status">${reportData.length} job${reportData.length === 1 ? "" : "s"} loaded${time ? ` · refreshed at ${escapeHtml(time)}` : ""}</p>`;
+}
 
 function reportsPage() {
+  const type = reportType(reportUi.typeKey);
+  const ready = reportDataStatus === "ready";
+
   return `
-    <div class="panel">
+    <section class="panel report-controls">
       <div class="panel-title">
         <h2>Reports</h2>
         <a class="secondary-button" href="${dashboardRouteForRole()}.html">Back</a>
       </div>
-      <p class="muted small">Search by customer, service call number, date, status, priority or technician - combine as many as you need. The reported fault, the technician's findings and resolution, the service call number and every attached file all show together in one summary.</p>
-      <form id="reportSearchForm" class="form-grid">
-        <div class="field">
-          <label for="report-customer">Customer, email or company</label>
-          <input id="report-customer" name="customer" value="${escapeHtml(reportFilters.customer)}" placeholder="e.g. Jane Silva" />
-        </div>
-        <div class="field">
-          <label for="report-service-call">Service call number</label>
-          <input id="report-service-call" name="serviceCallNumber" value="${escapeHtml(reportFilters.serviceCallNumber)}" placeholder="e.g. SC-2026-0042" />
-        </div>
-        <div class="field">
-          <label for="report-date-from">From</label>
-          <input id="report-date-from" name="dateFrom" type="date" value="${escapeHtml(reportFilters.dateFrom)}" />
-        </div>
-        <div class="field">
-          <label for="report-date-to">To</label>
-          <input id="report-date-to" name="dateTo" type="date" value="${escapeHtml(reportFilters.dateTo)}" />
-        </div>
-        <div class="field">
-          <label for="report-status">Status</label>
-          <select id="report-status" name="status">
-            <option value="all" ${reportFilters.status === "all" ? "selected" : ""}>All statuses</option>
-            <option value="new" ${reportFilters.status === "new" ? "selected" : ""}>New</option>
-            <option value="in_progress" ${reportFilters.status === "in_progress" ? "selected" : ""}>In Progress</option>
-            <option value="resolved" ${reportFilters.status === "resolved" ? "selected" : ""}>Resolved</option>
-            <option value="closed" ${reportFilters.status === "closed" ? "selected" : ""}>Closed</option>
+      ${reportDataNotice()}
+      <form id="reportParamsForm" class="report-params" autocomplete="off" novalidate>
+        <div class="field report-type-field">
+          <label for="reportType">Report Type</label>
+          <select id="reportType" name="type">
+            <option value="">Select Report Type…</option>
+            ${REPORT_TYPES.map(
+              (option) =>
+                `<option value="${option.key}" ${option.key === reportUi.typeKey ? "selected" : ""}>${escapeHtml(option.label)}</option>`
+            ).join("")}
           </select>
         </div>
-        <div class="field">
-          <label for="report-priority">Priority</label>
-          <select id="report-priority" name="priority">
-            <option value="all" ${reportFilters.priority === "all" ? "selected" : ""}>Any priority</option>
-            <option value="high" ${reportFilters.priority === "high" ? "selected" : ""}>High</option>
-            <option value="medium" ${reportFilters.priority === "medium" ? "selected" : ""}>Medium</option>
-            <option value="low" ${reportFilters.priority === "low" ? "selected" : ""}>Low</option>
-          </select>
-        </div>
-        <div class="field">
-          <label for="report-technician">Technician</label>
-          <select id="report-technician" name="technicianId">
-            <option value="all" ${reportFilters.technicianId === "all" ? "selected" : ""}>Any technician</option>
-            ${state.technicians
-              .map(
-                (tech) =>
-                  `<option value="${escapeHtml(tech.id)}" ${reportFilters.technicianId === tech.id ? "selected" : ""}>${escapeHtml(tech.name)}</option>`
-              )
-              .join("")}
-          </select>
-        </div>
-        <div class="field">
-          <label for="report-job-type">Job Type</label>
-          <select id="report-job-type" name="jobType">
-            <option value="all" ${reportFilters.jobType === "all" ? "selected" : ""}>Any job type</option>
-            <option value="service" ${reportFilters.jobType === "service" ? "selected" : ""}>Service</option>
-            <option value="fault" ${reportFilters.jobType === "fault" ? "selected" : ""}>Fault</option>
-            <option value="installation" ${reportFilters.jobType === "installation" ? "selected" : ""}>Installation</option>
-          </select>
-        </div>
-        <div class="action-row">
-          <button class="primary-button" type="submit" ${isReportLoading ? "disabled" : ""}>${isReportLoading ? "Searching…" : "Search"}</button>
+        ${
+          type
+            ? `<h3 class="report-filters-heading">Filters</h3>
+               <div class="form-grid report-filter-grid">${type.filters.map((name) => reportFilterField(name, type)).join("")}</div>
+               ${type.jobType ? `<p class="small muted">Only ${escapeHtml(jobTypeLabel(type.jobType).toLowerCase())} jobs are included in this report.</p>` : ""}`
+            : `<p class="muted small">Choose a report type to see its filters.</p>`
+        }
+        <div class="action-row report-control-actions">
+          <button class="primary-button" type="submit" ${type && ready ? "" : "disabled"}>Generate Report</button>
+          <button class="secondary-button" type="button" id="reportResetBtn" ${type ? "" : "disabled"}>Reset Filters</button>
+          <button class="secondary-button" type="button" id="reportRefreshBtn" ${reportDataStatus === "loading" ? "disabled" : ""}>
+            ${reportDataStatus === "loading" ? "Refreshing…" : "Refresh"}
+          </button>
         </div>
       </form>
-    </div>
+    </section>
     <br />
-    <div class="panel">
-      <div class="panel-title">
-        <h2>Results</h2>
-        ${
-          reportResults.length
-            ? `<button class="secondary-button" type="button" id="exportReportsBtn">Export to spreadsheet</button>`
-            : ""
-        }
-      </div>
-      ${reportResultsHtml()}
-    </div>
+    ${reportPreviewHtml()}
   `;
 }
 
-function reportResultsHtml() {
-  if (isReportLoading) {
-    return `<div class="loading-spinner">Searching…</div>`;
+function reportHeaderCell(key) {
+  const column = REPORT_COLUMNS[key];
+  const active = reportUi.sortKey === key;
+  const ascending = reportUi.sortDir === "asc";
+  return `
+    <th scope="col" class="${column.wide ? "report-col-wide" : ""}" aria-sort="${active ? (ascending ? "ascending" : "descending") : "none"}">
+      <button type="button" class="report-sort" data-report-sort="${key}" title="Sort by ${escapeHtml(column.label)}">
+        <span>${escapeHtml(column.label)}</span>
+        <span class="report-sort-icon" aria-hidden="true">${active ? (ascending ? "▲" : "▼") : "↕"}</span>
+      </button>
+    </th>`;
+}
+
+function reportColumnOptions(key) {
+  const column = REPORT_COLUMNS[key];
+  if (column.options) return column.options;
+  return [...new Set(reportBaseRows.map((row) => row.cells[key]?.text || "").filter(Boolean))].sort((a, b) =>
+    a.localeCompare(b)
+  );
+}
+
+function reportColumnFilterControl(key) {
+  const column = REPORT_COLUMNS[key];
+  const value = reportUi.columnFilters[key] || "";
+  const label = `Filter ${column.label}`;
+
+  if (column.kind === "select") {
+    return `
+      <select data-report-colfilter="${key}" aria-label="${escapeHtml(label)}">
+        <option value="">All</option>
+        ${reportColumnOptions(key)
+          .map((option) => `<option value="${escapeHtml(option)}" ${option === value ? "selected" : ""}>${escapeHtml(option)}</option>`)
+          .join("")}
+      </select>`;
   }
 
-  if (!reportSearched) {
-    return `<div class="empty-state">Enter at least one filter above and search — every ticket at once would be too much to scan.</div>`;
+  if (column.kind === "date") {
+    return `<input type="date" data-report-colfilter="${key}" value="${escapeHtml(value)}" aria-label="${escapeHtml(label)} by day" />`;
   }
 
-  if (!reportResults.length) {
-    return `<div class="empty-state">No tickets match those filters.</div>`;
+  return `<input type="search" data-report-colfilter="${key}" value="${escapeHtml(value)}" placeholder="Filter…" aria-label="${escapeHtml(label)}" />`;
+}
+
+function reportBodyHtml(type, rows) {
+  if (!rows.length) {
+    return `<tr class="report-empty-row"><td colspan="${type.columns.length}">No records found for the selected filters.</td></tr>`;
   }
+
+  return rows
+    .map(
+      (row) => `
+        <tr>${type.columns
+          .map((key) => {
+            const column = REPORT_COLUMNS[key];
+            const text = row.cells[key]?.text || "";
+            if (key === "ticketNumber" && text) {
+              return `<td class="mono"><button type="button" class="link-button report-ticket-link" data-view-report="${escapeHtml(row.id)}" title="View job summary">${escapeHtml(text)}</button></td>`;
+            }
+            const classes = [column.wide ? "report-cell-wide" : "", column.kind === "date" ? "report-cell-date" : ""]
+              .filter(Boolean)
+              .join(" ");
+            return `<td${classes ? ` class="${classes}"` : ""}>${text ? escapeHtml(text) : `<span class="report-blank">—</span>`}</td>`;
+          })
+          .join("")}</tr>`
+    )
+    .join("");
+}
+
+function reportPreviewHtml() {
+  const generated = reportUi.generated;
+  const type = reportType(generated?.typeKey);
+
+  if (!generated || !type) {
+    const message =
+      reportDataStatus === "error"
+        ? "Reports can't load until the problem above is fixed."
+        : "Choose a report type, set its filters, then press Generate Report.";
+    return `<section class="panel report-preview" id="reportPreview"><div class="empty-state">${escapeHtml(message)}</div></section>`;
+  }
+
+  const rows = currentReportRows();
 
   return `
-    <div class="ticket-list">
-      ${reportResults
-        .map(
-          (row) => `
-        <article class="ticket-card">
-          <div>
-            <h3>${escapeHtml(row.title)}</h3>
-            <div class="ticket-meta">
-              <span class="badge badge-muted">${escapeHtml(row.ticket_number)}</span>
-              ${statusBadge(row.status)}
-              <span class="badge badge-muted">${escapeHtml(jobTypeLabel(row.job_type))}</span>
-              <span class="badge badge-muted">${escapeHtml(normalizePriority(row.priority))}</span>
-              ${row.service_call_number ? `<span class="badge badge-ok mono">${escapeHtml(row.service_call_number)}</span>` : ""}
-              ${Number(row.attachment_count) > 0 ? `<span class="badge badge-muted">📎 ${Number(row.attachment_count)}</span>` : ""}
-            </div>
-            <p class="small muted">
-              ${
-                row.caller_name
-                  ? `📞 ${escapeHtml(row.caller_name)}${row.caller_phone ? ` (${escapeHtml(row.caller_phone)})` : ""} · logged by ${escapeHtml(row.customer_name || "staff")}`
-                  : escapeHtml(row.customer_name || row.customer_email || "Unknown customer")
-              }${row.company_name ? ` · ${escapeHtml(row.company_name)}` : ""}
-            </p>
-            <p class="small muted">${escapeHtml(relativeTime(row.created_at))}</p>
-            ${
-              row.resolution_notes
-                ? `<button class="link-button" type="button" data-view-report="${escapeHtml(row.id)}">Click here to view technician message</button>`
-                : ""
-            }
-          </div>
-          <div class="ticket-card-actions">
-            <button class="secondary-button" type="button" data-view-report="${escapeHtml(row.id)}">View Summary</button>
-          </div>
-        </article>
-      `
-        )
-        .join("")}
-    </div>
+    <section class="panel report-preview ${reportUi.fullscreen ? "report-fullscreen" : ""}" id="reportPreview">
+      <div class="panel-title report-preview-bar">
+        <div>
+          <h2>Report Preview</h2>
+          <p class="small muted" id="reportCount">${escapeHtml(reportCountText(rows.length))}</p>
+        </div>
+        <div class="action-row report-preview-actions">
+          <button class="secondary-button" type="button" id="reportOpenBtn">${reportUi.fullscreen ? "Close Full Screen" : "Open Report"}</button>
+          <button class="primary-button" type="button" id="reportDownloadBtn">Download Excel</button>
+          <button class="secondary-button" type="button" id="reportPrintBtn">Print Report</button>
+        </div>
+      </div>
+
+      <header class="report-sheet-header">
+        <p class="report-company">${escapeHtml(REPORT_COMPANY_LINE)}</p>
+        <h3 class="report-title">${escapeHtml(generated.title)}</h3>
+        <p class="report-meta">Generated Date: ${escapeHtml(formatLongDate(generated.generatedAt))}</p>
+        <p class="report-meta" id="reportFiltersLine">Filters: ${escapeHtml(appliedFiltersText())}</p>
+      </header>
+
+      <div class="report-toolbar">
+        <label class="sr-only" for="reportSearch">Search within this report</label>
+        <input id="reportSearch" type="search" placeholder="Search within this report…" value="${escapeHtml(reportUi.search)}" />
+        <button class="secondary-button compact-button" type="button" id="reportClearColumnFiltersBtn">Clear column filters</button>
+      </div>
+
+      <div class="report-table-wrap">
+        <table class="report-table">
+          <thead>
+            <tr>${type.columns.map(reportHeaderCell).join("")}</tr>
+            <tr class="report-colfilters">${type.columns.map((key) => `<th>${reportColumnFilterControl(key)}</th>`).join("")}</tr>
+          </thead>
+          <tbody id="reportTableBody">${reportBodyHtml(type, rows)}</tbody>
+        </table>
+      </div>
+    </section>
   `;
 }
 
-/** Wraps a value for one CSV field: quoted, with internal quotes doubled,
- *  whenever it contains a comma, quote or newline - the one escaping rule
- *  every spreadsheet app (Excel, Google Sheets, LibreOffice) agrees on. */
-function csvField(value) {
-  const text = String(value ?? "");
-  if (/[",\n]/.test(text)) {
-    return `"${text.replace(/"/g, '""')}"`;
+// Typing in a filter only redraws the rows, the count and the filter
+// line - never the inputs themselves, so focus and cursor stay put.
+function refreshReportTable() {
+  const type = reportType(reportUi.generated?.typeKey);
+  if (!type) return;
+
+  const rows = currentReportRows();
+  const body = document.querySelector("#reportTableBody");
+  if (body) body.innerHTML = reportBodyHtml(type, rows);
+
+  const count = document.querySelector("#reportCount");
+  if (count) count.textContent = reportCountText(rows.length);
+
+  const filtersLine = document.querySelector("#reportFiltersLine");
+  if (filtersLine) filtersLine.textContent = `Filters: ${appliedFiltersText()}`;
+
+  document.querySelectorAll("[data-report-sort]").forEach((button) => {
+    const active = reportUi.sortKey === button.dataset.reportSort;
+    const ascending = reportUi.sortDir === "asc";
+    const icon = button.querySelector(".report-sort-icon");
+    if (icon) icon.textContent = active ? (ascending ? "▲" : "▼") : "↕";
+    button.closest("th")?.setAttribute("aria-sort", active ? (ascending ? "ascending" : "descending") : "none");
+  });
+
+  bindReportRowLinks();
+}
+
+function bindReportRowLinks() {
+  document.querySelectorAll("#reportTableBody [data-view-report]").forEach((button) => {
+    button.onclick = () => openReportSummaryModal(button.dataset.viewReport);
+  });
+}
+
+function readReportParams(form) {
+  const data = new FormData(form);
+  const get = (name) => String(data.get(name) ?? "").trim();
+  return {
+    technicianId: get("technicianId"),
+    customerId: get("customerId"),
+    jobType: get("jobType"),
+    jobStatus: get("jobStatus"),
+    dateFrom: get("dateFrom"),
+    dateTo: get("dateTo"),
+    period: get("period") || "today",
+    singleDate: get("singleDate"),
+    serviceCall: get("serviceCall"),
+    ticketNumber: get("ticketNumber"),
+    installationNumber: get("installationNumber"),
+    referenceNumber: get("referenceNumber"),
+    description: get("description")
+  };
+}
+
+function reportParamsProblem(type, params) {
+  if (type.requires === "technician" && !params.technicianId) return "Choose a technician for this report.";
+  if (type.requires === "customer" && !params.customerId) return "Choose a customer for this report.";
+  if (type.requires === "serviceCall" && !params.serviceCall) return "Enter or pick a service call number.";
+  if (type.requires === "period") {
+    if (params.period === "single" && !params.singleDate) return "Choose the date for this report.";
+    if (params.period === "custom" && !params.dateFrom && !params.dateTo) return "Choose a From date, a To date, or both.";
   }
-  return text;
+
+  const usesRange = type.filters.includes("dateRange") || (type.requires === "period" && params.period === "custom");
+  if (usesRange && params.dateFrom && params.dateTo && params.dateFrom > params.dateTo) {
+    return "The From date is after the To date.";
+  }
+  return "";
 }
 
-// CSV rather than a real .xlsx: it opens correctly in both Google Sheets
-// and Excel with no extra library, no CDN script, and no new dependency
-// in a project that has deliberately carried none beyond supabase-js.
-function exportReportsToCsv() {
-  if (!reportResults.length) return;
-
-  const headers = [
-    "Ticket Number",
-    "Status",
-    "Job Type",
-    "Priority",
-    "Service Call Number",
-    "Attachments",
-    "Customer",
-    "Customer Email",
-    "Caller (if phoned in)",
-    "Caller Phone",
-    "Company",
-    "Technician",
-    "Reported",
-    "Resolved",
-    "Reported Fault",
-    "Technician Message"
-  ];
-
-  const rows = reportResults.map((row) => [
-    row.ticket_number,
-    statusLabel(row.status),
-    jobTypeLabel(row.job_type),
-    normalizePriority(row.priority),
-    row.service_call_number || "",
-    Number(row.attachment_count) || 0,
-    row.customer_name || "",
-    row.customer_email || "",
-    row.caller_name || "",
-    row.caller_phone || "",
-    row.company_name || "",
-    row.technician_name || "",
-    formatDateTime(row.created_at),
-    row.resolved_at ? formatDateTime(row.resolved_at) : "",
-    row.description || row.title || "",
-    row.resolution_notes || ""
-  ]);
-
-  // A UTF-8 byte-order mark, so Excel opens the file as UTF-8 instead of
-  // guessing the system codepage and mangling non-ASCII names.
-  const bom = String.fromCharCode(0xfeff);
-  const csv =
-    bom +
-    [headers, ...rows]
-      .map((line) => line.map(csvField).join(","))
-      .join("\r\n");
-
-  const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
-  const url = URL.createObjectURL(blob);
-  const link = document.createElement("a");
-  link.href = url;
-  link.download = `absl-service-reports-${new Date().toISOString().slice(0, 10)}.csv`;
-  document.body.appendChild(link);
-  link.click();
-  link.remove();
-  URL.revokeObjectURL(url);
-}
-
-async function searchReports(event) {
-  event.preventDefault();
-  if (!supabaseClient) {
-    showToast("Supabase is not configured.", "warning");
+function generateReport(event) {
+  event?.preventDefault();
+  const form = document.querySelector("#reportParamsForm");
+  const type = reportType(reportUi.typeKey);
+  if (!form || !type) {
+    showToast("Choose a report type first.", "warning");
+    return;
+  }
+  if (reportDataStatus !== "ready") {
+    showToast("Report data is still loading - try again in a moment.", "info");
     return;
   }
 
-  const form = new FormData(event.target);
-  reportFilters = {
-    customer: String(form.get("customer") || "").trim(),
-    serviceCallNumber: String(form.get("serviceCallNumber") || "").trim(),
-    dateFrom: String(form.get("dateFrom") || ""),
-    dateTo: String(form.get("dateTo") || ""),
-    status: String(form.get("status") || "all"),
-    priority: String(form.get("priority") || "all"),
-    technicianId: String(form.get("technicianId") || "all"),
-    jobType: String(form.get("jobType") || "all")
+  const params = readReportParams(form);
+  reportUi.params = params;
+
+  const problem = reportParamsProblem(type, params);
+  if (problem) {
+    showToast(problem, "warning");
+    return;
+  }
+
+  reportUi.columnFilters = {};
+  reportUi.search = "";
+  reportUi.sortKey = "";
+  reportUi.sortDir = "asc";
+  buildGeneratedReport(type, params);
+  render();
+  document.querySelector("#reportPreview")?.scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+function changeReportType(key) {
+  // A new report type starts with clean filters - carrying "Customer:
+  // Cargills" over from a customer report into All Jobs would silently
+  // narrow it.
+  reportUi.typeKey = key;
+  reportUi.params = emptyReportParams();
+  reportUi.generated = null;
+  reportUi.columnFilters = {};
+  reportUi.search = "";
+  reportUi.sortKey = "";
+  reportUi.fullscreen = false;
+  document.body.classList.remove("report-fullscreen-open");
+  reportBaseRows = [];
+  render();
+}
+
+function resetReportFilters() {
+  const typeKey = reportUi.typeKey;
+  reportUi = { ...defaultReportUi(), typeKey };
+  reportBaseRows = [];
+  document.body.classList.remove("report-fullscreen-open");
+
+  // Reports that can run with no choices regenerate straight away; the
+  // ones that need a technician, customer or number wait for one.
+  const type = reportType(typeKey);
+  if (type && reportDataStatus === "ready" && (!type.requires || type.requires === "period")) {
+    buildGeneratedReport(type, reportUi.params);
+  }
+  render();
+}
+
+async function refreshReportData() {
+  await loadReportData({ force: true });
+  const type = reportType(reportUi.generated?.typeKey);
+  if (type && reportDataStatus === "ready") buildGeneratedReport(type, reportUi.generated.params);
+  render();
+  if (reportDataStatus === "ready") showToast("Report data refreshed.", "success");
+}
+
+function toggleReportFullscreen(force) {
+  reportUi.fullscreen = typeof force === "boolean" ? force : !reportUi.fullscreen;
+  document.querySelector("#reportPreview")?.classList.toggle("report-fullscreen", reportUi.fullscreen);
+  document.body.classList.toggle("report-fullscreen-open", reportUi.fullscreen);
+  const button = document.querySelector("#reportOpenBtn");
+  if (button) button.textContent = reportUi.fullscreen ? "Close Full Screen" : "Open Report";
+}
+
+document.addEventListener("keydown", (event) => {
+  const modalOpen = document.getElementById("modalOverlay")?.classList.contains("is-visible");
+  if (event.key === "Escape" && reportUi.fullscreen && !modalOpen) toggleReportFullscreen(false);
+});
+
+function printReport() {
+  if (!reportUi.generated) return;
+  window.print();
+}
+
+// --- Reports: Excel export ------------------------------------------------
+// ExcelJS is bundled in vendor/ rather than loaded from a CDN (the site's
+// Content-Security-Policy only allows its own scripts), and only fetched
+// the first time someone exports - it's ~950 KB nobody else should pay for.
+
+let excelJsPromise = null;
+
+function loadExcelJs() {
+  if (window.ExcelJS) return Promise.resolve(window.ExcelJS);
+  if (!excelJsPromise) {
+    excelJsPromise = new Promise((resolve, reject) => {
+      const script = document.createElement("script");
+      script.src = "vendor/exceljs-4.4.0.min.js";
+      script.onload = () => (window.ExcelJS ? resolve(window.ExcelJS) : reject(new Error("ExcelJS did not initialise")));
+      script.onerror = () => {
+        excelJsPromise = null;
+        reject(new Error("Could not load the Excel exporter"));
+      };
+      document.head.appendChild(script);
+    });
+  }
+  return excelJsPromise;
+}
+
+function longestLine(text) {
+  return String(text || "")
+    .split("\n")
+    .reduce((max, line) => Math.max(max, line.length), 0);
+}
+
+function buildReportWorkbook(ExcelJS, type, generated, rows) {
+  const workbook = new ExcelJS.Workbook();
+  workbook.creator = "ABSL Helpdesk";
+  workbook.created = new Date();
+
+  const columns = type.columns.map((key) => ({ key, ...REPORT_COLUMNS[key] }));
+  const lastColumn = columns.length;
+  const headerRow = 6; // company, title, generated date, filters, blank, header
+  const sheetName = generated.title.replace(/[\\/?*[\]:]/g, "").slice(0, 31) || "Report";
+
+  const sheet = workbook.addWorksheet(sheetName, {
+    views: [{ state: "frozen", ySplit: headerRow, activeCell: `A${headerRow + 1}` }],
+    pageSetup: {
+      paperSize: 9,
+      orientation: "landscape",
+      fitToPage: true,
+      fitToWidth: 1,
+      fitToHeight: 0,
+      printTitlesRow: `${headerRow}:${headerRow}`
+    },
+    headerFooter: { oddFooter: "Page &P of &N" }
+  });
+
+  const line = { style: "thin", color: { argb: "FF94A3B8" } };
+  const border = { top: line, left: line, bottom: line, right: line };
+
+  const titleLines = [
+    [REPORT_COMPANY_LINE, { bold: true, size: 14 }],
+    [generated.title, { bold: true, size: 12 }],
+    [`Generated Date: ${formatLongDate(generated.generatedAt)}`, { size: 10 }],
+    [`Filters: ${appliedFiltersText()}`, { size: 10, italic: true, color: { argb: "FF475569" } }]
+  ];
+  titleLines.forEach(([text, font], index) => {
+    const rowNumber = index + 1;
+    if (lastColumn > 1) sheet.mergeCells(rowNumber, 1, rowNumber, lastColumn);
+    const cell = sheet.getCell(rowNumber, 1);
+    cell.value = text;
+    cell.font = font;
+    cell.alignment = { vertical: "middle", horizontal: "left", wrapText: true };
+  });
+
+  const header = sheet.getRow(headerRow);
+  columns.forEach((column, index) => {
+    const cell = header.getCell(index + 1);
+    cell.value = column.label;
+    cell.font = { bold: true };
+    cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFE2E8F0" } };
+    cell.alignment = { vertical: "middle", horizontal: "left", wrapText: true };
+    cell.border = border;
+  });
+
+  rows.forEach((row, rowIndex) => {
+    const excelRow = sheet.getRow(headerRow + 1 + rowIndex);
+    columns.forEach((column, index) => {
+      const data = row.cells[column.key] || {};
+      const cell = excelRow.getCell(index + 1);
+      if (column.kind === "date" && data.date) {
+        // A real Excel date for the local calendar day. ExcelJS converts
+        // Dates via UTC, so build the day at UTC midnight - otherwise a job
+        // logged just after midnight in Colombo would show the day before.
+        cell.value = new Date(Date.UTC(data.date.getFullYear(), data.date.getMonth(), data.date.getDate()));
+        cell.numFmt = "dd mmm yyyy";
+      } else {
+        cell.value = data.text || "";
+      }
+      cell.border = border;
+      cell.alignment = { vertical: "top", horizontal: "left", wrapText: true };
+    });
+  });
+
+  sheet.autoFilter = {
+    from: { row: headerRow, column: 1 },
+    to: { row: headerRow + rows.length, column: lastColumn }
   };
 
-  isReportLoading = true;
-  render();
+  columns.forEach((column, index) => {
+    const longest = rows.reduce(
+      (max, row) => Math.max(max, longestLine(row.cells[column.key]?.text)),
+      Math.min(longestLine(column.label), 24)
+    );
+    const minimum = column.kind === "date" ? 14 : 10;
+    const maximum = column.wide ? 60 : 36;
+    sheet.getColumn(index + 1).width = Math.min(maximum, Math.max(minimum, longest + 2));
+  });
+
+  return workbook;
+}
+
+function reportFileName(generated) {
+  const title = generated.title.replace(/–/g, "-").replace(/[\\/:*?"<>|]/g, "").trim();
+  return `${title} - ${localDateKey(generated.generatedAt)}.xlsx`;
+}
+
+function downloadBlob(blob, fileName) {
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = fileName;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+async function downloadReportExcel() {
+  const generated = reportUi.generated;
+  const type = reportType(generated?.typeKey);
+  if (!type) return;
+
+  const rows = currentReportRows();
+  if (!rows.length) {
+    showToast("There are no records to download for these filters.", "warning");
+    return;
+  }
+
+  const button = document.querySelector("#reportDownloadBtn");
+  if (button) {
+    button.disabled = true;
+    button.textContent = "Preparing…";
+  }
 
   try {
-    const { data, error } = await supabaseClient.rpc("report_search", {
-      p_customer_query: reportFilters.customer || null,
-      p_service_call_number: reportFilters.serviceCallNumber || null,
-      p_date_from: reportFilters.dateFrom || null,
-      p_date_to: reportFilters.dateTo || null,
-      p_status: reportFilters.status !== "all" ? reportFilters.status : null,
-      p_priority: reportFilters.priority !== "all" ? reportFilters.priority : null,
-      p_technician_id: reportFilters.technicianId !== "all" ? reportFilters.technicianId : null,
-      p_job_type: reportFilters.jobType !== "all" ? reportFilters.jobType : null
-    });
-
-    if (error) {
-      showToast(friendlyError(error.message), "error");
-      return;
-    }
-
-    reportResults = data || [];
-    reportSearched = true;
+    const ExcelJS = await loadExcelJs();
+    const workbook = buildReportWorkbook(ExcelJS, type, generated, rows);
+    const buffer = await workbook.xlsx.writeBuffer();
+    downloadBlob(
+      new Blob([buffer], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" }),
+      reportFileName(generated)
+    );
+    showToast(`Excel file ready - ${rows.length} record${rows.length === 1 ? "" : "s"}.`, "success");
   } catch (err) {
-    showToast(friendlyError(err), "error");
+    console.error("Excel export failed", err);
+    showToast("Could not create the Excel file. Please try again.", "error");
   } finally {
-    isReportLoading = false;
-    render();
+    if (button) {
+      button.disabled = false;
+      button.textContent = "Download Excel";
+    }
   }
 }
+
+function bindReportEvents() {
+  const form = document.querySelector("#reportParamsForm");
+  if (!form) return;
+
+  form.onsubmit = generateReport;
+  // Keep what's typed even if something re-renders the page before
+  // Generate is pressed (a live update, a refresh).
+  form.oninput = () => {
+    if (reportUi.typeKey) reportUi.params = readReportParams(form);
+  };
+
+  const typeSelect = document.querySelector("#reportType");
+  if (typeSelect) typeSelect.onchange = () => changeReportType(typeSelect.value);
+
+  const period = document.querySelector("#rp-period");
+  if (period) {
+    period.onchange = () => {
+      document.querySelectorAll("[data-period-field]").forEach((field) => {
+        field.hidden = field.dataset.periodField !== period.value;
+      });
+      reportUi.params = readReportParams(form);
+    };
+  }
+
+  const reset = document.querySelector("#reportResetBtn");
+  if (reset) reset.onclick = resetReportFilters;
+
+  const refresh = document.querySelector("#reportRefreshBtn");
+  if (refresh) refresh.onclick = refreshReportData;
+
+  const open = document.querySelector("#reportOpenBtn");
+  if (open) open.onclick = () => toggleReportFullscreen();
+
+  const download = document.querySelector("#reportDownloadBtn");
+  if (download) download.onclick = downloadReportExcel;
+
+  const print = document.querySelector("#reportPrintBtn");
+  if (print) print.onclick = printReport;
+
+  let searchTimer = null;
+  const search = document.querySelector("#reportSearch");
+  if (search) {
+    search.oninput = () => {
+      clearTimeout(searchTimer);
+      searchTimer = setTimeout(() => {
+        reportUi.search = search.value;
+        refreshReportTable();
+      }, 150);
+    };
+  }
+
+  const clearColumns = document.querySelector("#reportClearColumnFiltersBtn");
+  if (clearColumns) {
+    clearColumns.onclick = () => {
+      reportUi.columnFilters = {};
+      reportUi.search = "";
+      document.querySelectorAll("[data-report-colfilter]").forEach((control) => {
+        control.value = "";
+      });
+      if (search) search.value = "";
+      refreshReportTable();
+    };
+  }
+
+  document.querySelectorAll("[data-report-sort]").forEach((button) => {
+    button.onclick = () => {
+      const key = button.dataset.reportSort;
+      if (reportUi.sortKey !== key) {
+        reportUi.sortKey = key;
+        reportUi.sortDir = "asc";
+      } else if (reportUi.sortDir === "asc") {
+        reportUi.sortDir = "desc";
+      } else {
+        reportUi.sortKey = "";
+        reportUi.sortDir = "asc";
+      }
+      refreshReportTable();
+    };
+  });
+
+  const filterTimers = {};
+  document.querySelectorAll("[data-report-colfilter]").forEach((control) => {
+    const key = control.dataset.reportColfilter;
+    const apply = () => {
+      reportUi.columnFilters[key] = control.value;
+      refreshReportTable();
+    };
+    if (control.tagName === "SELECT" || control.type === "date") {
+      control.onchange = apply;
+    } else {
+      control.oninput = () => {
+        clearTimeout(filterTimers[key]);
+        filterTimers[key] = setTimeout(apply, 150);
+      };
+    }
+  });
+
+  bindReportRowLinks();
+}
+
 
 // Bumped on every call so a slow attachment fetch from an earlier click
 // can tell it's been superseded and skip writing into a modal that has
@@ -3671,7 +4583,7 @@ let reportModalToken = 0;
 // staff to the full ticket to see what backs the number up.
 async function openReportSummaryModal(reportId) {
   const myToken = ++reportModalToken;
-  const report = reportResults.find((row) => row.id === reportId);
+  const report = reportData.find((row) => row.id === reportId);
   const overlay = document.getElementById("modalOverlay");
   const card = document.getElementById("modalCard");
   if (!report || !overlay || !card) return;
@@ -3694,8 +4606,19 @@ async function openReportSummaryModal(reportId) {
         }
         <div><dt>Company</dt><dd>${escapeHtml(report.company_name || "—")}</dd></div>
         <div><dt>Job Type</dt><dd>${escapeHtml(jobTypeLabel(report.job_type))}</dd></div>
+        <div><dt>Job Status</dt><dd>${escapeHtml(jobStatusLabel(report.status, report.technician_id))}</dd></div>
         <div><dt>Technician</dt><dd>${escapeHtml(report.technician_name || "Unassigned")}</dd></div>
         <div><dt>Service call number</dt><dd class="mono">${escapeHtml(report.service_call_number || "—")}</dd></div>
+        ${
+          report.installation_number
+            ? `<div><dt>Installation number</dt><dd class="mono">${escapeHtml(report.installation_number)}</dd></div>`
+            : ""
+        }
+        ${
+          report.reference_number
+            ? `<div><dt>Reference number</dt><dd class="mono">${escapeHtml(report.reference_number)}</dd></div>`
+            : ""
+        }
         <div><dt>Reported</dt><dd>${escapeHtml(formatDateTime(report.created_at))}</dd></div>
         <div><dt>Resolved</dt><dd>${report.resolved_at ? escapeHtml(formatDateTime(report.resolved_at)) : "—"}</dd></div>
       </dl>
@@ -4061,6 +4984,22 @@ function renderTicketDetail(ticket) {
                  </div>`
               : ""
           }
+          ${
+            detail?.ticket?.installation_number
+              ? `<div>
+                   <dt>Installation number</dt>
+                   <dd class="mono">${escapeHtml(detail.ticket.installation_number)}</dd>
+                 </div>`
+              : ""
+          }
+          ${
+            detail?.ticket?.reference_number
+              ? `<div>
+                   <dt>Reference number</dt>
+                   <dd class="mono">${escapeHtml(detail.ticket.reference_number)}</dd>
+                 </div>`
+              : ""
+          }
         </dl>
 
         ${
@@ -4122,6 +5061,20 @@ function renderTicketDetail(ticket) {
                      value="${escapeHtml(detail?.ticket?.site_contact_phone || "")}"
                      placeholder="Who should the technician call on arrival?" />
             </div>
+            ${
+              canEditAsStaff
+                ? `<div class="field">
+                     <label for="edit-installation-${safeTicketId}">Installation number</label>
+                     <input id="edit-installation-${safeTicketId}" name="installationNumber" maxlength="60"
+                            value="${escapeHtml(detail?.ticket?.installation_number || "")}" />
+                   </div>
+                   <div class="field">
+                     <label for="edit-reference-${safeTicketId}">Reference number</label>
+                     <input id="edit-reference-${safeTicketId}" name="referenceNumber" maxlength="60"
+                            value="${escapeHtml(detail?.ticket?.reference_number || "")}" />
+                   </div>`
+                : ""
+            }
             <div class="action-row">
               <button class="primary-button" type="submit">Save changes</button>
               ${
@@ -4457,7 +5410,7 @@ const ROLE_GUIDES = [
       {
         title: "Raise a ticket",
         steps: [
-          "In **Create New Ticket**, choose the **Job Type**: Service, Fault or Installation.",
+          "In **Create New Ticket**, choose the **Job Type**: Service, Fault, Installation or Other.",
           "Add the **Department** that has the problem if it helps us find it (optional).",
           "Write a short **Problem Summary**, tick any **Common Problems** that apply, and add any other details.",
           "Set the **Priority** and the site **Location**. On a phone, **📍 Use my location** fills in your GPS position.",
@@ -4568,7 +5521,9 @@ const ROLE_GUIDES = [
       {
         title: "Reports",
         steps: [
-          "**Reports** searches every job by customer, service call number, date, status, priority, technician or job type."
+          "Open **Reports**, choose a **Report Type** — Technician Wise, Customer Wise, Date Wise, All Faults, Service Call Number or All Jobs — set its filters and press **Generate Report**.",
+          "In the preview, sort any column by clicking its heading, filter each column from the row under the headings, or search the whole report.",
+          "**Download Excel** saves a formatted .xlsx, **Print Report** prints just the report, and **Open Report** shows it full screen. All three contain exactly the rows you're looking at."
         ]
       }
     ]
@@ -4797,7 +5752,8 @@ function helpPage() {
               </div>`
           ).join("")}
         </div>
-        <p>${guideText("**Priority** (High, Medium, Low) says how urgent a job is. **Job type** (Service, Fault, Installation) says what kind of work it is.")}</p>
+        <p>${guideText("**Priority** (High, Medium, Low) says how urgent a job is. **Job type** (Service, Fault, Installation, Other) says what kind of work it is.")}</p>
+        <p>${guideText("**In reports**, a New job that already has a technician shows as **Assigned**, and In Progress shows as **Ongoing**.")}</p>
         <p>${guideText("**Who can move a ticket:** technicians can mark their jobs In Progress or Resolved; agents, operators and the CEO can set any status; customers can close their own tickets.")}</p>
       </section>
 
@@ -4865,6 +5821,7 @@ function customerView() {
               <option value="service">Service</option>
               <option value="fault">Fault</option>
               <option value="installation">Installation</option>
+              <option value="other">Other</option>
             </select>
           </div>
           <div class="field">
@@ -5549,6 +6506,8 @@ function render() {
 
   const route = currentRoute() || (currentUser ? dashboardRouteForRole() : "login");
   updateNavigation(route);
+  // Print styles for reports only apply on the Reports page.
+  document.body.classList.toggle("reports-page", route === "reports");
 
   if (!currentRoute()) {
     navigateTo(route);
@@ -5669,8 +6628,41 @@ function render() {
     }
 
     document.body.dataset.portal = portals[dashboardRouteForRole()]?.accent || "agent";
-    app.innerHTML = pageHeading("Reports", "Every job's fault, findings and resolution in one searchable place.") + reportsPage();
+
+    // A live update or refresh redraws this whole page; put the cursor back
+    // where it was so typing in a filter isn't interrupted.
+    const active = document.activeElement;
+    const focusId = active?.id || "";
+    const focusColumn = active?.dataset?.reportColfilter || "";
+    let selection = null;
+    try {
+      if (typeof active?.selectionStart === "number") selection = [active.selectionStart, active.selectionEnd];
+    } catch {
+      selection = null;
+    }
+
+    app.innerHTML =
+      pageHeading("Reports", "Technician, customer, date, fault, service call and all-jobs reports - filter, then open, download or print.") +
+      reportsPage();
     bindEvents();
+
+    const restore = focusId
+      ? document.getElementById(focusId)
+      : focusColumn
+        ? document.querySelector(`[data-report-colfilter="${focusColumn}"]`)
+        : null;
+    if (restore) {
+      restore.focus();
+      if (selection) {
+        try {
+          restore.setSelectionRange(selection[0], selection[1]);
+        } catch {
+          // date and select inputs have no text selection
+        }
+      }
+    }
+
+    if (reportDataStatus === "idle") loadReportData().then(render);
     return;
   }
 
@@ -5963,15 +6955,7 @@ function bindEvents() {
   const logTicketBtn = document.querySelector("#logTicketBtn");
   if (logTicketBtn) logTicketBtn.onclick = () => openLogTicketModal();
 
-  const reportSearchForm = document.querySelector("#reportSearchForm");
-  if (reportSearchForm) reportSearchForm.onsubmit = searchReports;
-
-  const exportReportsBtn = document.querySelector("#exportReportsBtn");
-  if (exportReportsBtn) exportReportsBtn.onclick = exportReportsToCsv;
-
-  document.querySelectorAll("[data-view-report]").forEach((button) => {
-    button.onclick = () => openReportSummaryModal(button.dataset.viewReport);
-  });
+  bindReportEvents();
 
   const loginForm = document.querySelector("#loginForm");
   if (loginForm) loginForm.onsubmit = signInUser;

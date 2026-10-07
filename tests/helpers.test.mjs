@@ -56,8 +56,89 @@ test("jobTypeLabel covers every allowed value and defaults to Fault", () => {
   assert.equal(h.jobTypeLabel("service"), "Service");
   assert.equal(h.jobTypeLabel("fault"), "Fault");
   assert.equal(h.jobTypeLabel("installation"), "Installation");
+  assert.equal(h.jobTypeLabel("other"), "Other");
   assert.equal(h.jobTypeLabel("nonsense"), "Fault");
   assert.equal(h.jobTypeLabel(undefined), "Fault");
+});
+
+test("jobStatusLabel derives Assigned from a new ticket with a technician", () => {
+  assert.equal(h.jobStatusLabel("new", null), "New");
+  assert.equal(h.jobStatusLabel("new", "tech-id"), "Assigned");
+  assert.equal(h.jobStatusLabel("in_progress", "tech-id"), "Ongoing");
+  assert.equal(h.jobStatusLabel("resolved", "tech-id"), "Resolved");
+  assert.equal(h.jobStatusLabel("closed", null), "Closed");
+});
+
+test("formatLongDate reads date keys as local days, not UTC", () => {
+  assert.equal(h.formatLongDate("2026-10-07"), "07 October 2026");
+  assert.equal(h.formatLongDate(new Date(2026, 0, 1, 0, 5)), "01 January 2026");
+  assert.equal(h.formatShortDate("2026-10-07"), "07 Oct 2026");
+  assert.equal(h.formatLongDate("not a date"), "");
+  assert.equal(h.localDateKey(new Date(2026, 9, 7, 23, 59)), "2026-10-07");
+});
+
+test("reportPeriod: today, Monday-to-Sunday weeks, whole months, single and custom", () => {
+  const wednesday = new Date(2026, 9, 7, 15, 0); // Wed 7 Oct 2026
+  assert.deepEqual(h.reportPeriod("today", {}, wednesday), { from: "2026-10-07", to: "2026-10-07" });
+  assert.deepEqual(h.reportPeriod("week", {}, wednesday), { from: "2026-10-05", to: "2026-10-11" });
+  assert.deepEqual(h.reportPeriod("week", {}, new Date(2026, 9, 11)), { from: "2026-10-05", to: "2026-10-11" });
+  assert.deepEqual(h.reportPeriod("month", {}, wednesday), { from: "2026-10-01", to: "2026-10-31" });
+  assert.deepEqual(h.reportPeriod("month", {}, new Date(2028, 1, 10)), { from: "2028-02-01", to: "2028-02-29" });
+  assert.deepEqual(h.reportPeriod("single", { date: "2026-10-03" }, wednesday), { from: "2026-10-03", to: "2026-10-03" });
+  assert.deepEqual(h.reportPeriod("custom", { from: "2026-10-01", to: "2026-10-31" }, wednesday), { from: "2026-10-01", to: "2026-10-31" });
+});
+
+test("reportPeriodLabel matches the report title format", () => {
+  assert.equal(h.reportPeriodLabel("2026-10-07", "2026-10-07"), "07 October 2026");
+  assert.equal(h.reportPeriodLabel("2026-10-01", "2026-10-31"), "01 October 2026 to 31 October 2026");
+  assert.equal(h.reportPeriodLabel("2026-10-01", ""), "From 01 October 2026");
+  assert.equal(h.reportPeriodLabel("", "2026-10-31"), "Up to 31 October 2026");
+});
+
+test("dateKeyInRange is inclusive and treats empty bounds as open", () => {
+  assert.ok(h.dateKeyInRange("2026-10-01", "2026-10-01", "2026-10-31"));
+  assert.ok(h.dateKeyInRange("2026-10-31", "2026-10-01", "2026-10-31"));
+  assert.ok(!h.dateKeyInRange("2026-11-01", "2026-10-01", "2026-10-31"));
+  assert.ok(h.dateKeyInRange("2020-01-01", "", ""));
+  assert.ok(!h.dateKeyInRange("", "2026-10-01", ""));
+});
+
+function reportRow(cells) {
+  return { cells: Object.fromEntries(Object.entries(cells).map(([k, v]) => [k, typeof v === "object" ? v : { text: v }])) };
+}
+
+test("filterReportRows combines column filters (AND) with search", () => {
+  const rows = [
+    reportRow({ technician: "Nimal Perera", jobType: "Fault", status: "Resolved", sc: "SC-2026-0042", date: { text: "01 Oct 2026", dateKey: "2026-10-01" } }),
+    reportRow({ technician: "Nimal Perera", jobType: "Service", status: "Resolved", sc: "SC-2026-0050", date: { text: "02 Oct 2026", dateKey: "2026-10-02" } }),
+    reportRow({ technician: "Kamal Silva", jobType: "Fault", status: "Ongoing", sc: "", date: { text: "02 Oct 2026", dateKey: "2026-10-02" } })
+  ];
+
+  const nimalFaults = h.filterReportRows(rows, {
+    technician: { type: "select", value: "Nimal Perera" },
+    jobType: { type: "select", value: "fault" }
+  });
+  assert.equal(nimalFaults.length, 1);
+  assert.equal(nimalFaults[0].cells.sc.text, "SC-2026-0042");
+
+  assert.equal(h.filterReportRows(rows, { sc: { type: "text", value: "2026-00" } }).length, 2);
+  assert.equal(h.filterReportRows(rows, { date: { type: "date", value: "2026-10-02" } }).length, 2);
+  assert.equal(h.filterReportRows(rows, {}, "kamal").length, 1);
+  assert.equal(h.filterReportRows(rows, { technician: { type: "select", value: "Nimal Perera" } }, "kamal").length, 0);
+  assert.equal(h.filterReportRows(rows, { technician: { type: "select", value: "" } }).length, 3);
+});
+
+test("sortReportRows: chronological dates, natural text, blanks last", () => {
+  const rows = [
+    reportRow({ date: { text: "b", sort: 200 }, sc: "SC-10" }),
+    reportRow({ date: { text: "", sort: "" }, sc: "" }),
+    reportRow({ date: { text: "a", sort: 100 }, sc: "SC-2" })
+  ];
+
+  assert.deepEqual(h.sortReportRows(rows, "date", "asc").map((r) => r.cells.date.sort), [100, 200, ""]);
+  assert.deepEqual(h.sortReportRows(rows, "date", "desc").map((r) => r.cells.date.sort), [200, 100, ""]);
+  assert.deepEqual(h.sortReportRows(rows, "sc", "asc").map((r) => r.cells.sc.text), ["SC-2", "SC-10", ""]);
+  assert.equal(h.sortReportRows(rows, "", "asc")[0], rows[0]);
 });
 
 test("a customer may only close their own ticket", () => {
