@@ -19,6 +19,7 @@ const outFile = path.join(root, "supabase", "live_schema_check.sql");
 
 // Present on purpose only after a manual Vault step (see 0020's header).
 const OPTIONAL_TRIGGERS = new Set(["public.notifications.trg_send_notifications"]);
+const OPTIONAL_FUNCTIONS = new Set(["public.trigger_send_notifications()"]);
 
 // --- SQL splitting -------------------------------------------------------
 
@@ -196,7 +197,7 @@ for (const file of files) {
         secdef: /\bsecurity\s+definer\b/i.test(attrs),
         volatility: vol,
         config: sp ? "search_path=" + sp[1].replace(/[\s'"]/g, "") : "",
-        isTrigger: /\breturns\s+trigger\b/i.test(attrs),
+        optional: OPTIONAL_FUNCTIONS.has(schema + "." + name + "(" + types.join(", ") + ")"),
       });
     } else if ((m = RE.dropFn.exec(stmt))) {
       const { schema, name } = qualified(m[1]);
@@ -235,7 +236,7 @@ function dollar(text) {
 }
 
 const fnRows = [...functions.values()].map((f) =>
-  "    (" + [lit(f.signature), lit(f.bodyMd5), f.secdef, lit(f.volatility), lit(f.config), lit(f.file)].join(", ") + ")"
+  "    (" + [lit(f.signature), lit(f.bodyMd5), f.secdef, lit(f.volatility), lit(f.config), lit(f.file), f.optional].join(", ") + ")"
 );
 
 const policyRows = [...policies.values()].map((p, i) => {
@@ -265,11 +266,13 @@ const sql = `-- ================================================================
 --   policy    differs / missing / left over
 --   trigger   missing / left over / calls a different function
 --   table     row security OFF
+-- Then information rows that are not problems: optional features not
+-- installed, and jobs that have no technician yet (for agents to assign).
 -- Expected: the summary row says 0 problems.
 -- =====================================================================
 
 DROP TABLE IF EXISTS pg_temp.absl_expected_function;
-CREATE TEMP TABLE absl_expected_function (signature text, body_md5 text, secdef boolean, volatility "char", config text, source text);
+CREATE TEMP TABLE absl_expected_function (signature text, body_md5 text, secdef boolean, volatility "char", config text, source text, optional boolean);
 INSERT INTO absl_expected_function VALUES
 ${fnRows.join(",\n")};
 
@@ -288,9 +291,10 @@ CREATE TEMP TABLE absl_finding (area text, item text, finding text, source text,
 
 
 -- 1. Functions ---------------------------------------------------------
-INSERT INTO absl_finding (area, item, finding, source)
+INSERT INTO absl_finding (area, item, finding, source, optional)
 SELECT 'function', replace(e.signature, '"', ''),
        CASE
+         WHEN p.oid IS NULL AND e.optional THEN 'not installed (optional - instant emails, see 0020)'
          WHEN p.oid IS NULL THEN 'missing'
          ELSE 'differs from repo: ' || concat_ws(', ',
            CASE WHEN md5(regexp_replace(p.prosrc, '[ \\t\\n\\r\\f\\v]', '', 'g')) <> e.body_md5 THEN 'body' END,
@@ -298,7 +302,8 @@ SELECT 'function', replace(e.signature, '"', ''),
            CASE WHEN p.provolatile <> e.volatility THEN 'volatility' END,
            CASE WHEN regexp_replace(coalesce(array_to_string(p.proconfig, ','), ''), '[ ''"]', '', 'g') <> e.config THEN 'search_path' END)
        END,
-       e.source
+       e.source,
+       e.optional AND p.oid IS NULL
 FROM absl_expected_function e
 LEFT JOIN pg_proc p ON p.oid = to_regprocedure(e.signature)
 WHERE p.oid IS NULL
@@ -438,7 +443,20 @@ END
 $absl_check$;
 
 
--- 5. Result ------------------------------------------------------------
+-- 5. Jobs with no technician - information for agents, not a problem ----
+INSERT INTO absl_finding (area, item, finding, source, optional)
+SELECT 'job', t.ticket_number || ' (' || coalesce(comp.name, 'no company') || ')',
+       'info: no technician yet - ' || t.status::text || ', logged by ' ||
+         coalesce(creator.full_name, 'unknown') || ' (' || coalesce(creator.role::text, 'no role') || ')' ||
+         CASE WHEN t.open_for_claim THEN ', open to every technician' ELSE '' END,
+       '', true
+FROM public.tickets t
+LEFT JOIN public.companies comp ON comp.id = t.company_id
+LEFT JOIN public.profiles creator ON creator.id = t.created_by
+WHERE t.assigned_technician_id IS NULL;
+
+
+-- 6. Result: summary, then problems, then information ------------------
 SELECT area, item, finding, source
 FROM (
   SELECT 0 AS ord, 'SUMMARY' AS area,
@@ -446,7 +464,7 @@ FROM (
          'checked ${functions.size} functions, ${policies.size} policies, ${triggers.size} triggers, row security on every table' AS finding,
          '' AS source
   UNION ALL
-  SELECT 1, area, item, finding, source FROM absl_finding
+  SELECT CASE WHEN optional THEN 2 ELSE 1 END, area, item, finding, source FROM absl_finding
 ) r
 ORDER BY ord, area, item;
 `;

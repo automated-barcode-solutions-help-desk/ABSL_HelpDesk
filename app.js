@@ -586,7 +586,7 @@ function openLogTicketModal() {
       </label>
       ${
         isTechnician
-          ? `<p class="small muted" id="log-self-job-hint" hidden>This job will be assigned to you — hand it to a colleague afterwards if you can't take it.</p>`
+          ? `<p class="small muted" id="log-assign-hint">This job will be assigned to you — hand it to a colleague afterwards if you can't take it.</p>`
           : ""
       }
       <div class="modal-actions">
@@ -604,14 +604,19 @@ function openLogTicketModal() {
   const callerFields = card.querySelector("#log-caller-fields");
   const openForClaimRow = card.querySelector("#log-open-for-claim-row");
   const openForClaimCheckbox = card.querySelector("#log-open-for-claim");
-  const selfJobHint = card.querySelector("#log-self-job-hint");
+  // A technician keeps what they log unless they open it to everyone.
+  const assignHint = card.querySelector("#log-assign-hint");
+  const updateAssignHint = () => {
+    if (assignHint) assignHint.hidden = openForClaimCheckbox.checked;
+  };
   selfJobCheckbox.onchange = () => {
     const isSelfJob = selfJobCheckbox.checked;
     callerFields.hidden = isSelfJob;
     openForClaimRow.hidden = isSelfJob;
     if (isSelfJob) openForClaimCheckbox.checked = false;
-    if (selfJobHint) selfJobHint.hidden = !isSelfJob;
+    updateAssignHint();
   };
+  openForClaimCheckbox.onchange = updateAssignHint;
 
   const logCommonCheckboxes = card.querySelectorAll(".common-problem-checkbox");
   const logTitleInput = card.querySelector("#log-title");
@@ -794,7 +799,7 @@ const WELCOME_TOUR_ROLE_STEPS = {
     },
     {
       title: "Log a Job",
-      body: "**➕ Log a Job** is for work that didn't come through the portal — a customer who phoned you, or a job you need to do yourself. Tick **This is my own job** and it's assigned to you; hand it to a colleague from the job if you can't take it."
+      body: "**➕ Log a Job** is for work that didn't come through the portal — a customer who phoned you, or a job you need to do yourself. Whatever you log is assigned to you, unless you tick **Open it to every technician**; you can also hand it to a colleague from the job later."
     }
   ],
   agent: [
@@ -5479,7 +5484,7 @@ const ROLE_GUIDES = [
         title: "Log a job",
         steps: [
           "Press **➕ Log a Job** for work that didn't come through the portal.",
-          "A customer phoned you: enter the company, the caller's name and phone, the job type and the problem.",
+          "A customer phoned you: enter the company, the caller's name and phone, the job type and the problem — the job is assigned to you.",
           "A job you need to do yourself, with no caller: tick **This is my own job** — it's assigned to you straight away.",
           "Can't take it right now? Tick **Open it to every technician** instead, and it goes to Open Jobs."
         ]
