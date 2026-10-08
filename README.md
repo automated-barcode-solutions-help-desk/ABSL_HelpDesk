@@ -3,10 +3,12 @@
 Client support, field service and helpdesk platform for
 **Automated Barcode Solutions (Pvt) Ltd**.
 
-Four role portals over one Supabase project: customers raise tickets with
-photos, voice notes and a GPS pin; agents triage, reply and dispatch;
-technicians work assigned jobs and draw parts from stock; the CEO console
-handles approvals, account limits and platform health.
+Three interfaces over one Supabase project: customers raise tickets with
+photos, voice notes and a GPS pin; technicians work assigned jobs and draw
+parts from stock; operators (and the CEO) triage, reply, dispatch, run
+reports, approve sign-ups and watch account limits and platform health in
+one Operator interface. The CEO also has the Main Console, where staff roles
+are changed (see migration 0033).
 
 | Document | Read it when |
 |---|---|
@@ -62,14 +64,15 @@ Apply in order, in the Supabase SQL editor:
 | `supabase/migrations/0004_feature_completion.sql` | Callbacks, reassignment, GPS, attachments, audit trail, indexes |
 
 Staff accounts are **not** created by signing up. Everyone registers as a
-customer; an administrator grants agent, technician or admin. The first
-administrator is made with `supabase/bootstrap_staff.sql`.
+customer or requests technician; an operator approves sign-ups as customer
+or technician, and only the CEO (role `admin`) grants operator or CEO, in the
+Main Console. The first CEO account is made with `supabase/bootstrap_staff.sql`.
 
 ## Notification worker
 
 `supabase/functions/send-notifications/index.ts` claims a batch of pending
 emails, sends them through Resend, retries with exponential backoff, and
-escalates permanent failures to the CEO console. Run it on a five-minute
+escalates permanent failures to the System Alerts panel and the CEO. Run it on a five-minute
 schedule. Secrets: `RESEND_API_KEY`, `FROM_EMAIL`, `WORKER_SECRET`.
 
 ## Inventory import
@@ -87,7 +90,9 @@ Produces a cleaned file and a rejects file. Import the cleaned one into
 helpers.js              pure logic, unit tested, loaded before app.js
 app.js                  views, state, data access
 styles.css              design system and portal theming
-customer|agent|technician|admin.html    the four role portals
+customer|operator|technician.html      the three interfaces
+main-console.html       the CEO's Manage Staff page
+agent|admin|staff-roles.html            old addresses, forwarded
 login|register|index|404.html           public pages
 vendor/                 pinned Supabase client, served from this site
 supabase/migrations/    schema, security, features

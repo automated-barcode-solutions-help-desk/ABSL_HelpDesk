@@ -2349,3 +2349,43 @@ body.report-fullscreen-open {
     text-decoration: none;
   }
 }
+
+/* --- Operator menu bar ---
+   Operators and the CEO get every section of the Operator interface in one
+   menu (up to eight links). On wide screens the links share the row; on
+   narrow ones they keep their natural width and the row scrolls sideways
+   instead of stacking into a tall block above every page. */
+.role-nav.is-office {
+  flex-wrap: nowrap;
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+  scrollbar-width: thin;
+}
+
+.role-nav.is-office a {
+  flex: 1 0 auto;
+  gap: 6px;
+  white-space: nowrap;
+}
+
+.nav-count {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 20px;
+  height: 20px;
+  padding: 0 6px;
+  border-radius: 999px;
+  background: #dc2626;
+  color: #fff;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+@media (max-width: 520px) {
+  .role-nav.is-office a {
+    width: auto;
+    flex: 0 0 auto;
+  }
+}

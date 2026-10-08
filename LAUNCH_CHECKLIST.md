@@ -104,7 +104,7 @@ retention. Full case in AUDIT_REPORT.md §6.1.
   day already exceeds the cap — and this account now carries both the
   notification worker *and* the SMTP auth emails from step 4.
 - Hitting the cap doesn't fail quietly: it dead-letters and fires a critical
-  admin alert per email, flooding the CEO Console on the busiest days.
+  admin alert per email, flooding System Alerts on the busiest days.
 
 Upgrade: resend.com → Settings → Billing → **Pro ($20/month)**. Removes the
 daily cap. Full case in AUDIT_REPORT.md §6.2.
@@ -259,14 +259,14 @@ PASS: the red *"That change was not permitted…"* message.
 1. Customer registers, verifies email, signs in.
 2. Creates a ticket with a **photo**, a **recorded voice note**, GPS location
    and a callback request.
-3. Agent sees it in the queue, **opens the photo and plays the voice note**,
+3. Operator sees it in the queue, **opens the photo and plays the voice note**,
    replies, sees the callback in the Callback Queue and marks it done.
-4. Agent assigns a technician; the technician gets an email.
+4. Operator assigns a technician; the technician gets an email.
 5. Technician opens their job, presses **Work** on a part; stock drops by one
    and the part appears under "Parts used".
 6. Technician hands the job to a colleague with a reason; the note appears on
    the thread.
-7. Agent moves the ticket to Resolved, then Closed; the customer gets an
+7. Operator moves the ticket to Resolved, then Closed; the customer gets an
    email at each step and the History panel shows every change with names.
 8. Admin approves a pending registration as a technician.
 9. Admin raises a company account limit.
@@ -303,6 +303,6 @@ Deliberately not attempted, and the honest risk register:
 ## 9. Recommended launch shape
 
 Soft-launch to one pilot company plus the ABSL technicians for a week, with the
-CEO Console watched daily. Full customer rollout after that week is quiet. The
+Operator dashboard watched daily. Full customer rollout after that week is quiet. The
 security holes are closed either way; the reason to stage it is that no real
 user has touched this yet.

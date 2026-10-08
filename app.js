@@ -12,11 +12,25 @@ let isDataLoading = false;
 let adminAlerts = [];
 
 const publicRoutes = ["login", "register"];
-const dashboardRoutes = ["customer", "agent", "operator", "technician", "admin"];
+const dashboardRoutes = ["customer", "operator", "technician"];
 
-// Each role gets its own portal: its own page, its own colour, its own name,
-// and its own slice of the data. Nothing loads data a role has no business
-// seeing, so a technician's browser never even asks for the approval queue.
+// The back office is one interface, Operator. The CEO (role "admin") uses it
+// too and additionally has the Main Console; "agent" is a retired role that
+// migration 0033 turns into operator, kept here so a leftover account still
+// lands in the right place.
+const OFFICE_ROLES = ["operator", "admin", "agent"];
+
+function isOfficeRole(role = userRole()) {
+  return OFFICE_ROLES.includes(role);
+}
+
+// Pages from before the merge, still reachable from bookmarks and home-screen
+// shortcuts. Each one forwards to where that content lives now.
+const legacyRoutes = { agent: "operator", admin: "operator", "staff-roles": "main-console" };
+
+// Each interface has its own page, colour, name and slice of the data.
+// Nothing loads data a role has no business seeing, so a technician's
+// browser never even asks for the approval queue.
 const portals = {
   customer: {
     name: "Customer Portal",
@@ -24,28 +38,12 @@ const portals = {
     accent: "customer",
     loads: ["tickets", "comments", "companies", "staff"]
   },
-  agent: {
-    name: "Agent Desk",
-    tagline: "Triage the queue and keep customers answered",
-    accent: "agent",
-    loads: ["tickets", "comments", "technicians", "companies", "staff", "callbacks"]
-  },
   operator: {
-    name: "Operator Desk",
-    tagline: "Dispatch unassigned jobs and watch the alerts",
+    name: "Operator",
+    tagline: "Every job, sign-up, alert and report in one place",
     accent: "operator",
-    loads: ["tickets", "comments", "companies", "staff", "callbacks", "alerts"]
-  },
-  technician: {
-    name: "Technician Field App",
-    tagline: "Your assigned jobs and the parts you use",
-    accent: "technician",
-    loads: ["tickets", "comments", "inventory", "technicians", "staff", "companies"]
-  },
-  admin: {
-    name: "CEO Console",
-    tagline: "Approvals, limits, and platform health",
-    accent: "admin",
+    // Everything the former Agent Desk, Operator Desk and CEO Console loaded.
+    // staffAccounts only loads for the CEO (see loadStaffAccounts).
     loads: [
       "tickets",
       "comments",
@@ -61,6 +59,12 @@ const portals = {
       "receipts",
       "clientErrors"
     ]
+  },
+  technician: {
+    name: "Technician Field App",
+    tagline: "Your assigned jobs and the parts you use",
+    accent: "technician",
+    loads: ["tickets", "comments", "inventory", "technicians", "staff", "companies"]
   }
 };
 
@@ -802,7 +806,7 @@ const WELCOME_TOUR_ROLE_STEPS = {
       body: "**➕ Log a Job** is for work that didn't come through the portal — a customer who phoned you, or a job you need to do yourself. Whatever you log is assigned to you, unless you tick **Open it to every technician**; you can also hand it to a colleague from the job later."
     }
   ],
-  agent: [
+  operator: [
     {
       title: "Ticket Queue",
       body: "Every ticket, searchable and filterable. **Waiting for a technician** in the summary cards counts jobs nobody has yet. Click a ticket to open it below the queue."
@@ -813,42 +817,18 @@ const WELCOME_TOUR_ROLE_STEPS = {
     },
     {
       title: "Callbacks, phone-ins and reports",
-      body: "**Callback Queue** lists customers waiting for a call — call, then press **Done**. **➕ Log a Job** records a phone-in. **Reports** searches every job."
-    }
-  ],
-  operator: [
-    {
-      title: "Ticket Queue",
-      body: "Every ticket, searchable and filterable. **Waiting for a technician** in the summary cards counts jobs nobody has yet. Click a ticket to open it below the queue."
-    },
-    {
-      title: "Dispatching jobs",
-      body: "Open an unassigned ticket and press **Release to all technicians** — every technician sees it and the first to accept gets it. Naming one specific technician is done by an agent or the CEO."
-    },
-    {
-      title: "Phone-ins, callbacks and alerts",
-      body: "**➕ Log a Job** records work that didn't come through the portal — tick **Open it to every technician** to release it straight away. Work the **Callback Queue**, and **Acknowledge** each **System Alert** once it's handled."
-    }
-  ],
-  admin: [
-    {
-      title: "Approving people",
-      body: "**User Approvals** lists new registrations. Choose the role to grant from the dropdown, then press **Approve** (or **Reject**). Applicants are emailed the decision."
-    },
-    {
-      title: "Managing staff",
-      body: "**Manage Staff** changes any account's role — promote a customer to technician, or make someone an agent or operator. Your own role can only be changed from a second admin account."
+      body: "**Callback Queue** lists customers waiting for a call — call, then press **Done**. **➕ Log a Job** records a phone-in. **Reports** builds technician, customer, date, fault, service call and all-jobs reports to filter, download or print."
     },
     {
       title: "Keeping watch",
-      body: "**Company Limit**, **Notifications**, **System Alerts**, **Resolution Receipts** and **Client Errors** keep the platform healthy. The portal bar lets you open any portal to see it as that role does."
+      body: "Further down: **User Approvals** for new sign-ups, **System Alerts**, **Notifications**, **Company Limit**, **Resolution Receipts** and **Client Errors**. The menu bar at the top opens each one as a full page."
     }
   ]
 };
 
 function welcomeTourSteps(role) {
   const firstName = String(currentProfile?.full_name || "").trim().split(/\s+/)[0];
-  const portalName = portals[role]?.name || "dashboard";
+  const portalName = role === "operator" ? "Operator dashboard" : portals[role]?.name || "dashboard";
 
   return [
     {
@@ -858,11 +838,19 @@ function welcomeTourSteps(role) {
     {
       title: "Finding your way around",
       body:
-        role === "admin"
-          ? "The dark bar at the top shows your connection status, **Help** and **Sign Out**. Below it, the portal bar lists every portal — you can open any of them. Summary cards at the top of each dashboard show what needs attention."
-          : "The dark bar at the top shows your connection status, **Help** and **Sign Out**. Below it, the portal bar shows your portal. Summary cards at the top show what needs attention, and your role and name are always on the right."
+        role === "operator"
+          ? "The dark bar at the top shows your connection status, **Help** and **Sign Out**. Below it, the menu bar has every section: **Dashboard**, **Reports**, **Approvals**, **Alerts**, **Notifications**, **Receipts** and **Client Errors**. Summary cards at the top of the dashboard show what needs attention."
+          : "The dark bar at the top shows your connection status, **Help** and **Sign Out**. Below it, the menu bar shows your portal. Summary cards at the top show what needs attention, and your role and name are always on the right."
     },
     ...(WELCOME_TOUR_ROLE_STEPS[role] || []),
+    ...(role === "operator" && userRole() === "admin"
+      ? [
+          {
+            title: "Your Main Console",
+            body: "As CEO you also have **Main Console** in the menu bar: **Manage Staff** changes any account's role — make someone an Operator, a Technician or another CEO. Operators can't do this; they approve new sign-ups as Customer or Technician only."
+          }
+        ]
+      : []),
     {
       title: "You're all set",
       body: "The full **User Guide** — a walkthrough for every role and answers to common questions — is always under **Help** at the top of the page."
@@ -1162,16 +1150,19 @@ const extraAuthedRoutes = ["tickets", "reset-password"];
 // guide before they've even registered.
 const openRoutes = ["help"];
 
-// Full-list pages behind the four admin dashboard panels that used to
-// render every row in place (User Approvals, Notifications, Admin System
-// Alerts, Resolution Receipts). Unlike extraAuthedRoutes, these need more
-// than "someone is signed in" - the data behind them is admin-only, so
-// canAccessRoute() checks the role, not just Boolean(currentUser).
-const adminOnlyExtraRoutes = ["approvals", "staff-roles", "notifications", "system-alerts", "receipts", "client-errors"];
+// Full-list pages behind the Operator dashboard's panels (Approvals,
+// Notifications, System Alerts, Resolution Receipts, Client Errors). Unlike
+// extraAuthedRoutes these need more than "someone is signed in": the data
+// behind them is for operators and the CEO only, so canAccessRoute() checks
+// the role, not just Boolean(currentUser).
+const officeListRoutes = ["approvals", "notifications", "system-alerts", "receipts", "client-errors"];
 
-// The Reports page: agent and admin, not technician (their dashboard is
-// already scoped to their own jobs) and not customer (report_search() is
-// staff-only regardless, but there is no reason to even show the link).
+// The CEO's own page: Manage Staff. Operators get everything else.
+const mainConsoleRoutes = ["main-console"];
+
+// The Reports page: operators and the CEO, not technicians (their dashboard
+// is already scoped to their own jobs) and not customers (report_jobs() is
+// office-only regardless, but there is no reason to even show the link).
 const staffReportRoutes = ["reports"];
 
 function currentRoute() {
@@ -1181,8 +1172,10 @@ function currentRoute() {
     dashboardRoutes.includes(pageName) ||
     extraAuthedRoutes.includes(pageName) ||
     openRoutes.includes(pageName) ||
-    adminOnlyExtraRoutes.includes(pageName) ||
-    staffReportRoutes.includes(pageName)
+    officeListRoutes.includes(pageName) ||
+    mainConsoleRoutes.includes(pageName) ||
+    staffReportRoutes.includes(pageName) ||
+    legacyRoutes[pageName]
   ) {
     return pageName;
   }
@@ -1195,22 +1188,27 @@ function userRole() {
   return currentProfile?.role || state.role || "customer";
 }
 
-// Resolves proper dashboard views
+// The interface a role lands on: operators, the CEO and any leftover agent
+// all use the one Operator interface.
 function dashboardRouteForRole(role = userRole()) {
+  if (isOfficeRole(role)) return "operator";
   return dashboardRoutes.includes(role) ? role : "customer";
 }
 
 function allowedDashboardRoutes() {
   if (!currentUser) return [];
-  const role = dashboardRouteForRole();
-  return role === "admin" ? dashboardRoutes : [role];
+  // The CEO can still preview the Customer and Technician portals (linked
+  // from the Main Console) to see them exactly as those users do.
+  if (userRole() === "admin") return ["operator", "technician", "customer"];
+  return [dashboardRouteForRole()];
 }
 
 function canAccessRoute(route) {
   if (publicRoutes.includes(route) || openRoutes.includes(route)) return true;
   if (extraAuthedRoutes.includes(route)) return Boolean(currentUser);
-  if (adminOnlyExtraRoutes.includes(route)) return Boolean(currentUser) && userRole() === "admin";
-  if (staffReportRoutes.includes(route)) return Boolean(currentUser) && ["agent", "admin"].includes(userRole());
+  if (officeListRoutes.includes(route)) return Boolean(currentUser) && isOfficeRole();
+  if (mainConsoleRoutes.includes(route)) return Boolean(currentUser) && userRole() === "admin";
+  if (staffReportRoutes.includes(route)) return Boolean(currentUser) && isOfficeRole();
   if (!dashboardRoutes.includes(route) || !currentUser) return false;
   return allowedDashboardRoutes().includes(route);
 }
@@ -1228,16 +1226,14 @@ function routeLabel(route) {
     login: "Login",
     register: "Register",
     customer: portals.customer.name,
-    agent: portals.agent.name,
     operator: portals.operator.name,
     technician: portals.technician.name,
-    admin: portals.admin.name,
     tickets: "My Tickets",
     help: "User Guide",
     approvals: "User Approvals",
-    "staff-roles": "Manage Staff",
+    "main-console": "Main Console",
     notifications: "Notifications",
-    "system-alerts": "Admin System Alerts",
+    "system-alerts": "System Alerts",
     receipts: "Resolution Receipts",
     "client-errors": "Client Errors",
     reports: "Reports"
@@ -1259,7 +1255,7 @@ function pageHeading(title, description) {
       ${
         who
           ? `<div class="portal-identity">
-               <span class="badge badge-role">${escapeHtml(role)}</span>
+               <span class="badge badge-role">${escapeHtml(role === "admin" ? "CEO" : role)}</span>
                <strong>${escapeHtml(who)}</strong>
              </div>`
           : ""
@@ -1315,7 +1311,7 @@ async function getLoggedInProfile() {
   }
 
   if (currentProfile.approval_status !== "approved") {
-    showToast("Your account is waiting for admin approval.", "info");
+    showToast("Your account is waiting for approval.", "info");
     return null;
   }
 
@@ -1572,10 +1568,14 @@ async function signOutUser() {
   navigateTo("login");
 }
 
-function setRole(role) {
-  state.role = role;
-  saveState();
-  navigateTo(role);
+// The menu also links to pages that aren't dashboards (Reports, Approvals...);
+// only a dashboard is remembered as the last interface opened.
+function setRole(route) {
+  if (dashboardRoutes.includes(route)) {
+    state.role = route;
+    saveState();
+  }
+  navigateTo(route);
 }
 
 async function openTicket(ticketId) {
@@ -1967,7 +1967,7 @@ async function requestCallback(event, ticketId) {
       return;
     }
 
-    showToast("Callback requested. An agent will call you.", "success");
+    showToast("Callback requested. ABSL will call you.", "success");
     await loadTicketDetail(ticketId);
   } catch (err) {
     showToast(friendlyError(err), "error");
@@ -2041,7 +2041,7 @@ async function useInventory(itemId) {
     return;
   }
 
-  if (ticket.assignedTechnicianId !== currentProfile?.id && userRole() !== "admin") {
+  if (ticket.assignedTechnicianId !== currentProfile?.id && !isOfficeRole()) {
     showToast("You can only take parts against a job assigned to you.", "warning");
     return;
   }
@@ -2780,7 +2780,7 @@ async function loadRealInventory() {
 }
 
 async function loadRealApprovals() {
-  if (!supabaseClient || userRole() !== "admin") return;
+  if (!supabaseClient || !isOfficeRole()) return;
 
   const { data, error } = await supabaseClient
     .from("approval_requests")
@@ -2858,7 +2858,7 @@ async function loadRealCompanies() {
 }
 
 async function loadRealNotifications() {
-  if (!supabaseClient || userRole() !== "admin") return;
+  if (!supabaseClient || !isOfficeRole()) return;
 
   // notifications.html's "See all N" link renders this exact array, not a
   // fresh fetch of its own - a cap here silently became the cap on what
@@ -2887,7 +2887,7 @@ async function loadRealNotifications() {
 }
 
 async function loadRealAdminAlerts() {
-  if (!supabaseClient || !["admin", "operator"].includes(userRole())) return;
+  if (!supabaseClient || !isOfficeRole()) return;
 
   const { data, error } = await supabaseClient
     .from("admin_alerts")
@@ -2906,7 +2906,7 @@ async function loadRealAdminAlerts() {
 // becomes Resolved — see 0005's on_ticket_resolved trigger. Nothing here
 // creates one; this only reads the record for the admin console.
 async function loadRealReceipts() {
-  if (!supabaseClient || userRole() !== "admin") return;
+  if (!supabaseClient || !isOfficeRole()) return;
 
   // Same reasoning as loadRealNotifications() above: receipts.html's
   // "See all" reuses this exact array, so the cap here is the real cap on
@@ -2955,7 +2955,7 @@ async function acknowledgeAlert(alertId) {
 // A browser JS error a real user hit, reported by logClientError() below.
 // Same visibility model as admin_alerts: admin-only, acknowledge to clear.
 async function loadRealClientErrors() {
-  if (!supabaseClient || userRole() !== "admin") return;
+  if (!supabaseClient || !isOfficeRole()) return;
 
   // Same reasoning as loadRealNotifications() above - client-errors.html's
   // "See all" reuses this exact array.
@@ -3209,27 +3209,16 @@ function renderStats() {
     cards.push(`<article class="stat-card"><span class="muted">Low stock items</span><strong>${data.lowStock}</strong></article>`);
   }
 
-  if (route === "agent") {
-    const unassigned = state.tickets.filter(
-      (ticket) => !ticket.assignedTechnicianId && ticket.status !== "closed"
-    ).length;
-    cards.push(`<article class="stat-card"><span class="muted">Waiting for a technician</span><strong>${unassigned}</strong></article>`);
-    cards.push(`<article class="stat-card"><span class="muted">Callback requests</span><strong>${state.tickets.filter((ticket) => ticket.callback).length}</strong></article>`);
-  }
-
+  // The cards the Agent Desk, Operator Desk and CEO Console each had, once.
   if (route === "operator") {
     const unassigned = state.tickets.filter(
       (ticket) => !ticket.assignedTechnicianId && ticket.status !== "closed"
     ).length;
     cards.push(`<article class="stat-card"><span class="muted">Waiting for a technician</span><strong>${unassigned}</strong></article>`);
     cards.push(`<article class="stat-card"><span class="muted">Callback requests</span><strong>${state.tickets.filter((ticket) => ticket.callback).length}</strong></article>`);
-    cards.push(`<article class="stat-card"><span class="muted">Unread alerts</span><strong>${adminAlerts.filter((alert) => !alert.acknowledged).length}</strong></article>`);
-  }
-
-  if (route === "admin") {
     cards.push(`<article class="stat-card"><span class="muted">Pending approvals</span><strong>${data.pendingApproval}</strong></article>`);
-    cards.push(`<article class="stat-card"><span class="muted">Low stock items</span><strong>${data.lowStock}</strong></article>`);
     cards.push(`<article class="stat-card"><span class="muted">Unread alerts</span><strong>${adminAlerts.filter((alert) => !alert.acknowledged).length}</strong></article>`);
+    cards.push(`<article class="stat-card"><span class="muted">Low stock items</span><strong>${data.lowStock}</strong></article>`);
   }
 
   // A fixed 3-column grid was fine for customer (1 card) and agent/technician
@@ -3277,7 +3266,7 @@ function ticketToolbar(total) {
 // work surface, not a preview of something else. Capping it at five cards
 // silently broke search for any query matching more than five tickets.
 function ticketListHostContent() {
-  return ["tickets", "agent", "operator"].includes(currentRoute())
+  return ["tickets", "operator"].includes(currentRoute())
     ? renderTicketList()
     : renderTicketListCompact(filterTickets(state.tickets, state.filters));
 }
@@ -3394,9 +3383,9 @@ function renderTicketList(tickets = null) {
     ? source
     : source.slice((page - 1) * TICKETS_PER_PAGE, page * TICKETS_PER_PAGE);
 
-  // Match the database: only an admin can delete a ticket, and the check is
-  // on the signed-in profile's role, not on which page is open.
-  const canDeleteTicket = userRole() === "admin";
+  // Match the database: only operators and the CEO can delete a ticket, and
+  // the check is on the signed-in profile's role, not on which page is open.
+  const canDeleteTicket = isOfficeRole();
 
   return `
     <div class="ticket-list">
@@ -3419,7 +3408,7 @@ function renderTicketListCompact(source) {
 
   if (!source.length) return emptyTicketListMessage();
 
-  const canDeleteTicket = userRole() === "admin";
+  const canDeleteTicket = isOfficeRole();
   const visible = source.slice(0, TICKETS_PREVIEW_COUNT);
 
   return `
@@ -4760,7 +4749,7 @@ function attachmentGallery(detail, { allowDelete = true } = {}) {
           // this up server-side regardless of what the UI offers.
           const canDelete =
             allowDelete &&
-            (attachment.uploaded_by === currentProfile?.id || userRole() === "admin");
+            (attachment.uploaded_by === currentProfile?.id || isOfficeRole());
           const deleteButton = canDelete
             ? `<button class="danger-button compact-button" type="button"
                  data-delete-attachment="${escapeHtml(attachment.id)}"
@@ -4881,8 +4870,8 @@ function renderTicketDetail(ticket) {
 
   const detail = currentDetail();
   const role = userRole();
-  const isStaff = ["agent", "operator", "technician", "admin"].includes(role);
-  const canDeleteContent = role === "admin";
+  const isStaff = isOfficeRole(role) || role === "technician";
+  const canDeleteContent = isOfficeRole(role);
   // Prefer the freshly-loaded detail record over the cached dashboard list:
   // state.tickets only updates from the realtime subscription, which can
   // silently drop (backgrounded tab, network blip) and leave a permission
@@ -4898,36 +4887,27 @@ function renderTicketDetail(ticket) {
   // "in_progress" and keep offering the Add-photo form on a job that is
   // actually already finished.
   const ticketStatus = detail?.ticket ? detail.ticket.status : ticket.status;
-  // Mirrors the "Staff update tickets" RLS policy exactly: an agent or admin
-  // may edit any ticket, but a technician only one assigned to them — not
-  // every ticket in the queue. Showing the edit form more broadly than the
-  // database allows just produced a confusing "not permitted" error on save.
+  // Mirrors the "Staff update tickets" RLS policy exactly: an operator or the
+  // CEO may edit any ticket, but a technician only one assigned to them —
+  // not every ticket in the queue. Showing the edit form more broadly than
+  // the database allows just produced a confusing "not permitted" error on
+  // save.
   const canEditAsStaff =
-    role === "agent" ||
-    role === "operator" ||
-    role === "admin" ||
-    (role === "technician" && assignedTechnicianId === currentProfile?.id);
+    isOfficeRole(role) || (role === "technician" && assignedTechnicianId === currentProfile?.id);
   const canEdit = canEditAsStaff || (ticket.status === "new" && detail?.ticket?.created_by === currentProfile?.id);
   // Mirrors reassign_ticket()'s own permission check: a technician may only
   // touch a job that is unclaimed or already theirs. The control used to be
   // shown to every technician for every ticket, enabled, and only the RPC
   // rejected it — a confusing "not permitted" error on click instead of the
-  // control simply not being offered.
-  // An operator dispatches by releasing an unassigned job to every
-  // technician at once (release_ticket_to_pool), not by picking one name -
-  // that stays an agent/admin action, so operator is deliberately absent
-  // here.
+  // control simply not being offered. Operators (and the CEO) can both name a
+  // technician and release a job to everyone.
   const canReassign =
-    role === "agent" ||
-    role === "admin" ||
+    isOfficeRole(role) ||
     (role === "technician" &&
       (!assignedTechnicianId || assignedTechnicianId === currentProfile?.id));
   // Same staleness preference as assignedTechnicianId/ticketStatus above.
   const openForClaim = detail?.ticket ? detail.ticket.open_for_claim : ticket.openForClaim;
-  const canRelease =
-    !assignedTechnicianId &&
-    !openForClaim &&
-    ["agent", "operator", "admin"].includes(role);
+  const canRelease = !assignedTechnicianId && !openForClaim && isOfficeRole(role);
   // A technician claiming an unclaimed job may only claim it for themselves
   // — reassign_ticket() now rejects handing an unclaimed job to a colleague,
   // so don't offer that colleague as an option in the first place.
@@ -4976,9 +4956,9 @@ function renderTicketDetail(ticket) {
             ? `<div class="inline-banner inline-banner-warning callback-banner">
                  ☎ <strong>Callback requested</strong> on ${escapeHtml(callback.phone)}
                  ${
-                   ["agent", "operator", "admin"].includes(role)
+                   isOfficeRole(role)
                      ? `<button class="primary-button compact-button" type="button" data-complete-callback="${escapeHtml(callback.id)}">Mark as called</button>`
-                     : `<span class="small muted">An agent will call you back.</span>`
+                     : `<span class="small muted">ABSL will call you back.</span>`
                  }
                </div>`
             : ""
@@ -5397,8 +5377,8 @@ function pendingApprovalPage() {
     <section class="auth-page">
       <article class="panel auth-card">
         <p class="auth-kicker">Account pending</p>
-        <h2>Waiting for admin approval</h2>
-        <p class="muted">Your account exists, but an ABSL admin must approve it before you can open the dashboard. You'll get an email as soon as they do.</p>
+        <h2>Waiting for approval</h2>
+        <p class="muted">Your account exists, but ABSL must approve it before you can open the dashboard. You'll get an email as soon as they do.</p>
         <div class="action-row">
           <a class="secondary-button" href="help.html">Read the user guide</a>
           <button class="secondary-button" type="button" id="signOutBtn">Sign Out</button>
@@ -5424,8 +5404,8 @@ const GUIDE_NAVIGATION = [
     body: "The dark bar at the very top: your connection status (**Connected** or **Offline**), **Help** (this guide) and **Sign Out**."
   },
   {
-    title: "Portal bar",
-    body: "Just below it: the portal you're in — Customer, Agent, Operator, Technician or CEO Console. Most people only see their own. The CEO sees all five."
+    title: "Menu bar",
+    body: "Just below it. Customers and technicians see their own portal. Operators see every section of the Operator interface — Dashboard, Reports, Approvals, Alerts, Notifications, Receipts and Client Errors — and the CEO also sees **Main Console**."
   },
   {
     title: "Page header",
@@ -5531,9 +5511,10 @@ const ROLE_GUIDES = [
     ]
   },
   {
-    role: "agent",
-    title: "Agent Desk",
-    summary: "For ABSL agents: triaging the queue, assigning technicians and keeping customers answered.",
+    role: "operator",
+    title: "Operator",
+    summary:
+      "For ABSL operators and the CEO: the ticket queue, dispatching, callbacks, reports, sign-ups and keeping the platform healthy — all in one place.",
     tasks: [
       {
         title: "Work the Ticket Queue",
@@ -5546,20 +5527,20 @@ const ROLE_GUIDES = [
         title: "Assign or dispatch",
         steps: [
           "To give a job to one person: under **Technician**, choose them and press **Assign**. They're emailed straight away.",
-          "To let the first available technician take it: press **Release to all technicians** under **Dispatch**."
+          "To let the first available technician take it: press **Release to all technicians** under **Dispatch**. Every technician sees it in Open Jobs."
         ]
       },
       {
         title: "Keep the customer informed",
         steps: [
-          "Reply in the **Conversation** — the customer is emailed. Move the ticket along with the **Status** buttons."
+          "Reply in the **Conversation** — the customer is emailed. Move the ticket along with the **Status** buttons; **Resolved** asks for the service call number, notes and receipt photo."
         ]
       },
       {
         title: "Callbacks and phone-ins",
         steps: [
           "The **Callback Queue** lists customers waiting for a call. Press **Call** (on a phone), then **Done** once you've spoken.",
-          "Use **➕ Log a Job** for a customer who phoned instead of using the portal."
+          "Use **➕ Log a Job** for a customer who phoned instead of using the portal. Tick **Open it to every technician** to release it straight away, or **This is a job nobody called in for** when there's no caller."
         ]
       },
       {
@@ -5569,65 +5550,13 @@ const ROLE_GUIDES = [
           "In the preview, sort any column by clicking its heading, filter each column from the row under the headings, or search the whole report.",
           "**Download Excel** saves a formatted .xlsx, **Print Report** prints just the report, and **Open Report** shows it full screen. All three contain exactly the rows you're looking at."
         ]
-      }
-    ]
-  },
-  {
-    role: "operator",
-    title: "Operator Desk",
-    summary: "For ABSL operators: dispatching unassigned jobs, logging phone-ins and watching system alerts.",
-    tasks: [
-      {
-        title: "Check what's waiting",
-        steps: [
-          "The **Ticket Queue** lists every ticket. **Waiting for a technician** in the summary cards counts unassigned open jobs.",
-          "Click a ticket to open it below the queue."
-        ]
       },
-      {
-        title: "Dispatch to technicians",
-        steps: [
-          "Open an unassigned ticket and press **Release to all technicians** under **Dispatch**. Every technician sees it in Open Jobs, and the first to accept gets it.",
-          "To give a job to one named technician, ask an agent or the CEO."
-        ]
-      },
-      {
-        title: "Log phone-in and internal jobs",
-        steps: [
-          "Press **➕ Log a Job**. Tick **Open it to every technician** to release it straight away.",
-          "For work nobody called in about, tick **This is a job nobody called in for** — no caller details needed."
-        ]
-      },
-      {
-        title: "Callbacks",
-        steps: ["Work the **Callback Queue**: call the customer, then press **Done**."]
-      },
-      {
-        title: "System alerts",
-        steps: [
-          "**System Alerts** shows problems such as emails that could not be sent. Press **Acknowledge** once each one is handled."
-        ]
-      }
-    ]
-  },
-  {
-    role: "admin",
-    title: "CEO Console",
-    summary: "For the CEO / administrator: approving people, managing staff roles and keeping the platform healthy.",
-    tasks: [
       {
         title: "Approve new accounts",
         steps: [
           "**User Approvals** lists new registrations waiting for review.",
-          "Choose the role to grant from the dropdown — it starts on what they asked for — then press **Approve**, or **Reject**. They're emailed the decision."
-        ]
-      },
-      {
-        title: "Promote someone or change a role",
-        steps: [
-          "Open **Manage Staff** (the button under the summary cards, or **See all** in the Manage Staff panel).",
-          "Pick a new role for any account and press **Update Role** — make someone an agent, operator, technician or another admin.",
-          "Your own role can only be changed from a second admin account."
+          "Choose the role to grant — it starts on what they asked for — then press **Approve**, or **Reject**. They're emailed the decision.",
+          "Operators can approve as Customer or Technician. Operator and CEO access is given by the CEO in the Main Console."
         ]
       },
       {
@@ -5639,15 +5568,31 @@ const ROLE_GUIDES = [
       {
         title: "Keep the platform healthy",
         steps: [
+          "**System Alerts** shows problems such as emails that could not be sent — press **Acknowledge** once each one is handled.",
           "**Notifications** is the email queue — **Retry** anything that failed.",
-          "**Admin System Alerts** — press **Acknowledge** once each alert is handled.",
-          "**Resolution Receipts** and **Client Errors** are records for checking jobs and diagnosing problems. **Reports** searches every job."
+          "**Resolution Receipts** and **Client Errors** are records for checking jobs and diagnosing problems.",
+          "Each of these has its own page in the menu bar at the top."
+        ]
+      }
+    ]
+  },
+  {
+    role: "main-console",
+    title: "Main Console (CEO only)",
+    summary: "For the CEO: deciding who has which role. Everything else the CEO does is in the Operator interface.",
+    tasks: [
+      {
+        title: "Promote someone or change a role",
+        steps: [
+          "Open **Main Console** from the menu bar.",
+          "Under **Manage Staff**, pick a new role for any account and press **Update Role** — make someone an Operator, a Technician or another CEO.",
+          "Your own role can only be changed from a second CEO account."
         ]
       },
       {
-        title: "See any portal",
+        title: "See a portal as its users do",
         steps: [
-          "The portal bar shows every portal. Open one to see it exactly as that role does — a yellow banner reminds you, with a link back to the CEO Console."
+          "**Preview a portal** opens the Customer Portal or the Technician Field App. A yellow banner links you back to the Operator dashboard."
         ]
       }
     ]
@@ -5665,7 +5610,7 @@ const GUIDE_EMAILS = [
   "**Everyone:** a verification link when you register, a message when your account is approved (or not), and password reset links when you ask for one.",
   "**Customers:** ticket created, every status change, replies from ABSL, and the resolution with notes and the service call number.",
   "**Technicians:** when a job is assigned to you, and when a customer replies on one of your jobs.",
-  "**Agents, operators and the CEO:** when a customer replies on a ticket that has no technician yet."
+  "**Operators and the CEO:** when a customer replies on a ticket that has no technician yet."
 ];
 
 const GUIDE_FAQ = [
@@ -5674,8 +5619,8 @@ const GUIDE_FAQ = [
     a: "Wait a few minutes and check your spam or junk folder. Still nothing? Email us at the address below with the address you registered."
   },
   {
-    q: "It says “Waiting for admin approval”.",
-    a: "Your account needs an ABSL admin to approve it. You'll get an email as soon as they do — then just sign in again."
+    q: "It says “Waiting for approval”.",
+    a: "Your account needs ABSL to approve it. You'll get an email as soon as they do — then just sign in again."
   },
   {
     q: "I forgot my password.",
@@ -5710,6 +5655,8 @@ function guideSteps(steps) {
 function helpPage() {
   const signedIn = Boolean(currentUser);
   const myRole = signedIn ? dashboardRouteForRole() : "customer";
+  const guideIsMine = (guide) =>
+    signedIn && (guide.role === myRole || (guide.role === "main-console" && userRole() === "admin"));
   const sections = [
     ["guide-start", "Getting started"],
     ["guide-navigation", "Finding your way"],
@@ -5742,7 +5689,7 @@ function helpPage() {
           "**Sign in.** Use **Login** with your email and password. You land on your own dashboard automatically.",
           "**First time in?** A short welcome tour shows you around. You can replay it any time from this page."
         ])}
-        <p class="small muted">Agent, Operator and CEO accounts can't be requested when registering. Register as normal and the CEO will set your role.</p>
+        <p class="small muted">Operator and CEO accounts can't be requested when registering. Register as normal and the CEO will set your role.</p>
       </section>
 
       <section class="panel guide-section" id="guide-navigation">
@@ -5768,10 +5715,10 @@ function helpPage() {
         }</p>
         ${ROLE_GUIDES.map(
           (guide) => `
-            <details class="guide-role" ${guide.role === myRole ? "open" : ""}>
+            <details class="guide-role" ${guideIsMine(guide) ? "open" : ""}>
               <summary>
                 <span>${escapeHtml(guide.title)}</span>
-                ${signedIn && guide.role === myRole ? `<span class="badge badge-ok">Your role</span>` : ""}
+                ${guideIsMine(guide) ? `<span class="badge badge-ok">Your role</span>` : ""}
               </summary>
               <p class="muted">${escapeHtml(guide.summary)}</p>
               ${guide.tasks
@@ -5798,7 +5745,7 @@ function helpPage() {
         </div>
         <p>${guideText("**Priority** (High, Medium, Low) says how urgent a job is. **Job type** (Service, Fault, Installation, Other) says what kind of work it is.")}</p>
         <p>${guideText("**In reports**, a New job that already has a technician shows as **Assigned**, and In Progress shows as **Ongoing**.")}</p>
-        <p>${guideText("**Who can move a ticket:** technicians can mark their jobs In Progress or Resolved; agents, operators and the CEO can set any status; customers can close their own tickets.")}</p>
+        <p>${guideText("**Who can move a ticket:** technicians can mark their jobs In Progress or Resolved; operators and the CEO can set any status; customers can close their own tickets.")}</p>
       </section>
 
       <section class="panel guide-section" id="guide-emails">
@@ -5936,7 +5883,51 @@ function customerView() {
   `;
 }
 
-function agentView() {
+function callbackQueuePanel() {
+  return `
+      <div class="panel">
+        <div class="panel-title">
+          <h2>Callback Queue</h2>
+          <span class="badge ${state.callbackQueue.length ? "badge-danger" : "badge-muted"}">
+            ${state.callbackQueue.length} waiting
+          </span>
+        </div>
+        ${
+          state.callbackQueue.length
+            ? state.callbackQueue
+                .map(
+                  (callback) => `
+          <div class="inventory-row">
+            <div>
+              <strong>${escapeHtml(callback.phone)}</strong>
+              <p class="small muted">
+                ${escapeHtml(callback.ticketNumber)} · ${escapeHtml(truncate(callback.title, 48))}
+              </p>
+              <span class="small muted">${escapeHtml(callback.customer)} · waiting ${escapeHtml(callback.waitingSince)}</span>
+            </div>
+            <div class="action-row">
+              <a class="secondary-button compact-button" href="tel:${escapeHtml(telHref(callback.phone))}">Call</a>
+              <button class="primary-button compact-button" type="button" data-complete-callback="${escapeHtml(callback.id)}">Done</button>
+            </div>
+          </div>`
+                )
+                .join("")
+            : `<div class="empty-state">Nobody is waiting for a call.</div>`
+        }
+      </div>`;
+}
+
+// The one back-office interface: everything the Agent Desk, Operator Desk and
+// CEO Console each showed, once. Work first (the queue, callbacks and the
+// open job), then the panels for keeping watch. Manage Staff is not here -
+// it is the CEO's Main Console.
+function operatorView() {
+  const company = currentCompany();
+  const pendingApprovals = state.approvals.filter((approval) => approval.status === "pending").length;
+  const unacknowledged = adminAlerts.filter((alert) => !alert.acknowledged);
+  // Unread first, so the preview shows what still needs handling.
+  const alertsByUrgency = [...unacknowledged, ...adminAlerts.filter((alert) => alert.acknowledged)];
+
   return `
     ${renderStats()}
     <br />
@@ -5952,114 +5943,121 @@ function agentView() {
         </div>
         ${ticketToolbar(filterTickets(state.tickets, state.filters).length)}
       </div>
-      <div class="panel">
-        <div class="panel-title">
-          <h2>Callback Queue</h2>
-          <span class="badge ${state.callbackQueue.length ? "badge-danger" : "badge-muted"}">
-            ${state.callbackQueue.length} waiting
-          </span>
-        </div>
-        ${
-          state.callbackQueue.length
-            ? state.callbackQueue
-                .map(
-                  (callback) => `
-          <div class="inventory-row">
-            <div>
-              <strong>${escapeHtml(callback.phone)}</strong>
-              <p class="small muted">
-                ${escapeHtml(callback.ticketNumber)} · ${escapeHtml(truncate(callback.title, 48))}
-              </p>
-              <span class="small muted">${escapeHtml(callback.customer)} · waiting ${escapeHtml(callback.waitingSince)}</span>
-            </div>
-            <div class="action-row">
-              <a class="secondary-button compact-button" href="tel:${escapeHtml(telHref(callback.phone))}">Call</a>
-              <button class="primary-button compact-button" type="button" data-complete-callback="${escapeHtml(callback.id)}">Done</button>
-            </div>
-          </div>`
-                )
-                .join("")
-            : `<div class="empty-state">Nobody is waiting for a call.</div>`
-        }
-      </div>
+      ${callbackQueuePanel()}
     </section>
     <br />
     ${renderTicketDetail(selectedTicket())}
-  `;
-}
-
-// Dispatch role: same queue and callback surface as agent, plus a watch on
-// system alerts. Deliberately no Reports link and no direct technician
-// picker here - see the canReassign/canRelease split in renderTicketDetail
-// for why: an operator opens a job to every technician instead of naming
-// one, which stays an agent/admin action.
-function operatorView() {
-  const unacknowledged = adminAlerts.filter((alert) => !alert.acknowledged);
-  const alertsToShow = (unacknowledged.length ? unacknowledged : adminAlerts).slice(
-    0,
-    ADMIN_LIST_PREVIEW_COUNT
-  );
-
-  return `
-    ${renderStats()}
     <br />
-    <section class="hero-grid">
-      <div class="panel">
+    <section class="dashboard-grid">
+      <article class="panel">
         <div class="panel-title">
-          <h2>Ticket Queue</h2>
-          <div class="action-row">
-            <button class="secondary-button" type="button" id="logTicketBtn">➕ Log a Job</button>
-            <button class="secondary-button" type="button" id="loadRealTicketsBtn">Refresh</button>
-          </div>
+          <h2>User Approvals</h2>
+          <span class="badge ${pendingApprovals ? "badge-danger" : "badge-muted"}">${pendingApprovals} pending</span>
         </div>
-        ${ticketToolbar(filterTickets(state.tickets, state.filters).length)}
-      </div>
-      <div class="panel">
-        <div class="panel-title">
-          <h2>Callback Queue</h2>
-          <span class="badge ${state.callbackQueue.length ? "badge-danger" : "badge-muted"}">
-            ${state.callbackQueue.length} waiting
-          </span>
-        </div>
-        ${
-          state.callbackQueue.length
-            ? state.callbackQueue
-                .map(
-                  (callback) => `
-          <div class="inventory-row">
-            <div>
-              <strong>${escapeHtml(callback.phone)}</strong>
-              <p class="small muted">
-                ${escapeHtml(callback.ticketNumber)} · ${escapeHtml(truncate(callback.title, 48))}
-              </p>
-              <span class="small muted">${escapeHtml(callback.customer)} · waiting ${escapeHtml(callback.waitingSince)}</span>
-            </div>
-            <div class="action-row">
-              <a class="secondary-button compact-button" href="tel:${escapeHtml(telHref(callback.phone))}">Call</a>
-              <button class="primary-button compact-button" type="button" data-complete-callback="${escapeHtml(callback.id)}">Done</button>
-            </div>
-          </div>`
-                )
-                .join("")
-            : `<div class="empty-state">Nobody is waiting for a call.</div>`
-        }
-      </div>
-      <div class="panel panel-span-full">
+        ${userRole() === "admin" ? "" : `<p class="small muted">${escapeHtml(APPROVALS_NOTE)}</p>`}
+        ${adminListPreview(
+          state.approvals,
+          approvalRowHtml,
+          "approvals.html",
+          "requests",
+          "No approval requests are waiting."
+        )}
+      </article>
+
+      <article class="panel">
         <div class="panel-title">
           <h2>System Alerts</h2>
           <span class="badge ${unacknowledged.length ? "badge-danger" : "badge-muted"}">
             ${unacknowledged.length} unread
           </span>
         </div>
+        ${adminListPreview(
+          alertsByUrgency,
+          alertRowHtml,
+          "system-alerts.html",
+          "alerts",
+          "No alerts logged."
+        )}
+      </article>
+
+      <article class="panel">
+        <h2>Notifications</h2>
+        ${adminListPreview(
+          state.notifications,
+          notificationRowHtml,
+          "notifications.html",
+          "notifications",
+          "No notifications are queued."
+        )}
+      </article>
+
+      <article class="panel">
+        <h2>Company Limit</h2>
+        <p class="muted">When a company reaches the account limit, increase it here or reject the request.</p>
         ${
-          alertsToShow.length
-            ? alertsToShow.map(alertRowHtml).join("")
-            : `<div class="empty-state">No alerts logged.</div>`
+          state.companies.length
+            ? `
+        <div class="field">
+          <label for="companySelect">Company</label>
+          <select id="companySelect">
+            ${state.companies
+              .map(
+                (item) => `
+              <option value="${escapeHtml(item.id)}" ${item.id === company.id ? "selected" : ""}>
+                ${escapeHtml(item.name)} (limit ${item.accountLimit})
+              </option>`
+              )
+              .join("")}
+          </select>
+        </div>
+        <div class="notice">${escapeHtml(company.name)} current customer limit: ${company.accountLimit} users.</div>
+        <div class="field">
+          <label for="companyLimitInput">New account limit</label>
+          <input id="companyLimitInput" type="number" min="1" value="${company.accountLimit}" />
+        </div>
+        <div class="action-row">
+          <button class="primary-button" type="button" id="updateCompanyLimitBtn">Update Limit</button>
+        </div>`
+            : `<div class="empty-state">No companies loaded yet.</div>`
         }
-      </div>
+      </article>
     </section>
+
     <br />
-    ${renderTicketDetail(selectedTicket())}
+
+    <section class="dashboard-grid">
+      <article class="panel panel-span-full">
+        <div class="panel-title">
+          <h2>Resolution Receipts</h2>
+          <span class="badge badge-muted">${state.receipts.length} on file</span>
+        </div>
+        <p class="muted small">Generated automatically the moment a ticket is marked Resolved. Each one keeps its own record — deleting the ticket later does not remove its receipt.</p>
+        ${adminListPreview(
+          state.receipts,
+          receiptRowHtml,
+          "receipts.html",
+          "receipts",
+          "No tickets have been resolved yet."
+        )}
+      </article>
+
+      <article class="panel panel-span-full">
+        <div class="panel-title">
+          <h2>Client Errors</h2>
+          <span class="badge ${state.clientErrors.some((err) => !err.acknowledged) ? "badge-danger" : "badge-muted"}">
+            ${state.clientErrors.filter((err) => !err.acknowledged).length} unacknowledged
+          </span>
+        </div>
+        <p class="muted small">A JavaScript error a real signed-in user actually hit in their browser, reported automatically - not a test, not a log line someone has to go looking for.</p>
+        ${adminListPreview(
+          state.clientErrors,
+          clientErrorRowHtml,
+          "client-errors.html",
+          "errors",
+          "No browser errors reported."
+        )}
+      </article>
+    </section>
   `;
 }
 
@@ -6106,7 +6104,7 @@ function technicianView() {
         ${
           assigned.length
             ? renderTicketListCompact(assigned)
-            : `<div class="empty-state">No jobs assigned to you right now. An agent will assign work here.</div>`
+            : `<div class="empty-state">No jobs assigned to you right now. An operator will assign work here.</div>`
         }
       </div>
       <!-- Parts Inventory panel — held for now, not deleted. Re-add the
@@ -6167,9 +6165,24 @@ function adminListPreview(items, rowRenderer, seeAllHref, seeAllNoun, emptyMessa
 // One row renderer per list, shared between the compact dashboard preview
 // and that list's full page - the two used to duplicate this markup for
 // ticket cards too, which is exactly how they quietly drifted apart.
-const STAFF_ROLES = ["customer", "technician", "agent", "operator", "admin"];
+const STAFF_ROLES = ["customer", "technician", "operator", "admin"];
+
+// Roles shown in a sign-up's Approve dropdown. Operators approve as customer
+// or technician only; making someone an operator or CEO is the CEO's call
+// (admin_review_registration() enforces the same split).
+function approvalGrantRoles() {
+  return userRole() === "admin" ? STAFF_ROLES : ["customer", "technician"];
+}
+
+const APPROVALS_NOTE =
+  "Operators approve sign-ups as Customer or Technician. Operator and CEO access is given by the CEO in the Main Console.";
 
 function approvalRowHtml(approval) {
+  const grantRoles = approvalGrantRoles();
+  // A retired "agent" request maps to operator, like everywhere else.
+  const requested = approval.requestedRole === "agent" ? "operator" : approval.requestedRole;
+  const preselect = grantRoles.includes(requested) ? requested : grantRoles[0];
+
   return `
     <div class="inventory-row">
       <div>
@@ -6184,10 +6197,9 @@ function approvalRowHtml(approval) {
         ${
           approval.status === "pending"
             ? `<select id="approval-role-${escapeHtml(approval.id)}" aria-label="Role to grant">
-                 ${STAFF_ROLES.map(
-                   (role) =>
-                     `<option value="${role}" ${role === approval.requestedRole ? "selected" : ""}>${role}</option>`
-                 ).join("")}
+                 ${grantRoles
+                   .map((role) => `<option value="${role}" ${role === preselect ? "selected" : ""}>${role}</option>`)
+                   .join("")}
                </select>
                <button class="primary-button compact-button" type="button" data-approve="${escapeHtml(approval.id)}">Approve</button>
                <button class="danger-button compact-button" type="button" data-reject="${escapeHtml(approval.id)}">Reject</button>`
@@ -6291,7 +6303,7 @@ function staffRoleRowHtml(profile) {
       <div class="action-row">
         ${
           isSelf
-            ? `<span class="small muted">This is you — use another admin account to change your own role.</span>`
+            ? `<span class="small muted">This is you — use a second CEO account to change your own role.</span>`
             : `<select id="staff-role-${escapeHtml(profile.id)}" aria-label="New role for ${escapeHtml(profile.full_name || profile.email)}">
                  ${STAFF_ROLES.map(
                    (role) => `<option value="${role}" ${role === profile.role ? "selected" : ""}>${role}</option>`
@@ -6304,22 +6316,18 @@ function staffRoleRowHtml(profile) {
   `;
 }
 
-// route -> { title, badge, items, rowRenderer, emptyMessage } for the six
-// "See all" pages above. One generic page renderer and one generic route
-// branch in render() use this instead of six near-identical copies.
+// route -> { title, items, rowRenderer, emptyMessage, note } for the five
+// "See all" pages behind the Operator dashboard. One generic page renderer
+// and one generic route branch in render() use this instead of five
+// near-identical copies.
 function adminListRoutes() {
   return {
     approvals: {
       title: "User Approvals",
       items: state.approvals,
       rowRenderer: approvalRowHtml,
-      emptyMessage: "No approval requests are waiting."
-    },
-    "staff-roles": {
-      title: "Manage Staff",
-      items: state.staffAccounts,
-      rowRenderer: staffRoleRowHtml,
-      emptyMessage: "No accounts yet."
+      emptyMessage: "No approval requests are waiting.",
+      note: userRole() === "admin" ? "" : APPROVALS_NOTE
     },
     notifications: {
       title: "Notifications",
@@ -6328,7 +6336,7 @@ function adminListRoutes() {
       emptyMessage: "No notifications are queued."
     },
     "system-alerts": {
-      title: "Admin System Alerts",
+      title: "System Alerts",
       items: adminAlerts,
       rowRenderer: alertRowHtml,
       emptyMessage: "No critical system events logged."
@@ -6356,8 +6364,9 @@ function adminListPage(route) {
     <div class="panel">
       <div class="panel-title">
         <h2>${escapeHtml(list.title)}</h2>
-        <a class="secondary-button" href="admin.html">Back</a>
+        <a class="secondary-button" href="operator.html">Back to Dashboard</a>
       </div>
+      ${list.note ? `<p class="small muted">${escapeHtml(list.note)}</p>` : ""}
       ${
         list.items.length
           ? list.items.map(list.rowRenderer).join("")
@@ -6367,105 +6376,32 @@ function adminListPage(route) {
   `;
 }
 
-function adminView() {
-  const company = currentCompany();
-
+// The CEO's own page. Everything else the CEO Console had is on the Operator
+// dashboard, which the CEO uses like every operator; this keeps what only
+// the CEO may do - changing who has which role.
+function mainConsolePage() {
   return `
-    ${renderStats()}
-    <br />
-    <div class="action-row" style="margin-bottom: 20px; align-items: center;">
-      <span class="small muted">• Click here to view service reports</span>
-      <a class="secondary-button" href="reports.html">Reports</a>
-      <span class="small muted">• Promote or change the role of any account</span>
-      <a class="secondary-button" href="staff-roles.html">Manage Staff</a>
-    </div>
     <section class="dashboard-grid">
-      <article class="panel">
-        <div class="panel-title">
-          <h2>User Approvals</h2>
-          <span class="badge badge-muted">Personal email review</span>
-        </div>
-        ${adminListPreview(
-          state.approvals,
-          approvalRowHtml,
-          "approvals.html",
-          "requests",
-          "No approval requests are waiting."
-        )}
-      </article>
-
-      <article class="panel">
+      <article class="panel panel-span-full">
         <div class="panel-title">
           <h2>Manage Staff</h2>
           <span class="badge badge-muted">${state.staffAccounts.length} accounts</span>
         </div>
-        ${adminListPreview(
-          state.staffAccounts,
-          staffRoleRowHtml,
-          "staff-roles.html",
-          "accounts",
-          "No accounts yet."
-        )}
-      </article>
-
-      <article class="panel">
-        <h2>Company Limit</h2>
-        <p class="muted">When a company reaches the account limit, admin can increase or reject the request.</p>
+        <p class="muted small">Change any account's role: promote a customer to technician, make someone an Operator, or add another CEO. Operators can't change roles — they approve new sign-ups as Customer or Technician only.</p>
         ${
-          state.companies.length
-            ? `
-        <div class="field">
-          <label for="companySelect">Company</label>
-          <select id="companySelect">
-            ${state.companies
-              .map(
-                (item) => `
-              <option value="${escapeHtml(item.id)}" ${item.id === company.id ? "selected" : ""}>
-                ${escapeHtml(item.name)} (limit ${item.accountLimit})
-              </option>`
-              )
-              .join("")}
-          </select>
-        </div>
-        <div class="notice">${escapeHtml(company.name)} current customer limit: ${company.accountLimit} users.</div>
-        <div class="field">
-          <label for="companyLimitInput">New account limit</label>
-          <input id="companyLimitInput" type="number" min="1" value="${company.accountLimit}" />
-        </div>
-        <div class="action-row">
-          <button class="primary-button" type="button" id="updateCompanyLimitBtn">Update Limit</button>
-        </div>`
-            : `<div class="empty-state">No companies loaded yet.</div>`
+          state.staffAccounts.length
+            ? state.staffAccounts.map(staffRoleRowHtml).join("")
+            : `<div class="empty-state">No accounts yet.</div>`
         }
       </article>
 
       <article class="panel">
-        <h2>Notifications</h2>
-        ${adminListPreview(
-          state.notifications,
-          notificationRowHtml,
-          "notifications.html",
-          "notifications",
-          "No notifications are queued."
-        )}
-      </article>
-    </section>
-    
-    <br />
-    
-    <section class="dashboard-grid">
-      <article class="panel panel-span-2">
-        <div class="panel-title">
-          <h2>Admin System Alerts</h2>
-          <span class="badge badge-danger">Dead-letter Escalate</span>
+        <h2>Preview a portal</h2>
+        <p class="muted small">See the Customer Portal or the Technician Field App exactly as those users do. A banner at the top links you back.</p>
+        <div class="action-row">
+          <a class="secondary-button" href="customer.html">Customer Portal</a>
+          <a class="secondary-button" href="technician.html">Technician Field App</a>
         </div>
-        ${adminListPreview(
-          adminAlerts,
-          alertRowHtml,
-          "system-alerts.html",
-          "alerts",
-          "No critical system events logged."
-        )}
       </article>
 
       <article class="panel">
@@ -6474,38 +6410,6 @@ function adminView() {
           <span class="badge badge-muted">Migration ready</span>
         </div>
         <p class="muted">Use the script in scripts/import_inventory_csv.js to clean old spreadsheet data before loading it into Supabase.</p>
-      </article>
-
-      <article class="panel panel-span-full">
-        <div class="panel-title">
-          <h2>Resolution Receipts</h2>
-          <span class="badge badge-muted">${state.receipts.length} on file</span>
-        </div>
-        <p class="muted small">Generated automatically the moment a ticket is marked Resolved. Each one keeps its own record — deleting the ticket later does not remove its receipt.</p>
-        ${adminListPreview(
-          state.receipts,
-          receiptRowHtml,
-          "receipts.html",
-          "receipts",
-          "No tickets have been resolved yet."
-        )}
-      </article>
-
-      <article class="panel panel-span-full">
-        <div class="panel-title">
-          <h2>Client Errors</h2>
-          <span class="badge ${state.clientErrors.some((err) => !err.acknowledged) ? "badge-danger" : "badge-muted"}">
-            ${state.clientErrors.filter((err) => !err.acknowledged).length} unacknowledged
-          </span>
-        </div>
-        <p class="muted small">A JavaScript error a real signed-in user actually hit in their browser, reported automatically - not a test, not a log line someone has to go looking for.</p>
-        ${adminListPreview(
-          state.clientErrors,
-          clientErrorRowHtml,
-          "client-errors.html",
-          "errors",
-          "No browser errors reported."
-        )}
       </article>
     </section>
   `;
@@ -6526,29 +6430,27 @@ function render() {
       description: "Create support tickets, request callback support, and follow updates.",
       render: customerView
     },
-    agent: {
-      title: portals.agent.name,
-      description: "Review incoming tickets, reply to customers, assign technicians, and update ticket progress.",
-      render: agentView
-    },
     operator: {
       title: portals.operator.name,
-      description: "Check unassigned tickets, log phone-in jobs, release jobs to every technician, and watch system alerts.",
+      description:
+        "Work the ticket queue and callbacks, assign or release jobs, approve sign-ups, and keep watch on alerts, notifications, receipts and errors.",
       render: operatorView
     },
     technician: {
       title: portals.technician.name,
       description: "Work your assigned jobs, accept jobs from the open pool, log your own jobs, and keep customers updated.",
       render: technicianView
-    },
-    admin: {
-      title: portals.admin.name,
-      description: "Approve users, manage company account limits, monitor notifications, and keep the platform healthy.",
-      render: adminView
     }
   };
 
   const route = currentRoute() || (currentUser ? dashboardRouteForRole() : "login");
+
+  // A page from before the merge (Agent Desk, CEO Console, Manage Staff).
+  if (legacyRoutes[route]) {
+    navigateTo(legacyRoutes[route]);
+    return;
+  }
+
   updateNavigation(route);
   // Print styles for reports only apply on the Reports page.
   document.body.classList.toggle("reports-page", route === "reports");
@@ -6629,7 +6531,7 @@ function render() {
     return;
   }
 
-  if (adminOnlyExtraRoutes.includes(route)) {
+  if (officeListRoutes.includes(route) || mainConsoleRoutes.includes(route)) {
     if (!currentUser) {
       app.innerHTML = loginPage(`Please login before opening ${routeLabel(route)}.`);
       bindEvents();
@@ -6647,8 +6549,11 @@ function render() {
       return;
     }
 
-    document.body.dataset.portal = "admin";
-    app.innerHTML = pageHeading(routeLabel(route), "Full list.") + adminListPage(route);
+    document.body.dataset.portal = "operator";
+    app.innerHTML = mainConsoleRoutes.includes(route)
+      ? pageHeading("Main Console", "The CEO's own page: who has which role. Everything else is on the Operator dashboard.") +
+        mainConsolePage()
+      : pageHeading(routeLabel(route), "Full list.") + adminListPage(route);
     bindEvents();
     return;
   }
@@ -6671,7 +6576,7 @@ function render() {
       return;
     }
 
-    document.body.dataset.portal = portals[dashboardRouteForRole()]?.accent || "agent";
+    document.body.dataset.portal = portals[dashboardRouteForRole()]?.accent || "operator";
 
     // A live update or refresh redraws this whole page; put the cursor back
     // where it was so typing in a filter isn't interrupted.
@@ -6742,13 +6647,13 @@ function render() {
 
   let headerHtml = pageHeading(views[route].title, views[route].description);
 
-  // The CEO can open the other three portals; make it obvious that this is
-  // not their own desk.
-  if (userRole() === "admin" && route !== "admin") {
+  // The CEO can preview the Customer and Technician portals; make it obvious
+  // that this is not their own interface.
+  if (isOfficeRole() && route !== "operator") {
     headerHtml =
       `<div class="inline-banner inline-banner-warning" style="margin-bottom: 20px;">
-         👁 <strong>Viewing as admin:</strong> this is the ${escapeHtml(views[route].title)}.
-         <a href="admin.html">Back to the CEO Console</a>
+         👁 <strong>Preview:</strong> this is the ${escapeHtml(views[route].title)} as its users see it.
+         <a href="operator.html">Back to the Operator dashboard</a>
        </div>` + headerHtml;
   }
 
@@ -6766,11 +6671,39 @@ function render() {
   maybeShowWelcomeTour(route);
 }
 
+// The menu under the top bar. Customers and technicians see their own portal;
+// operators and the CEO see every section of the Operator interface in one
+// row, and the CEO also has the Main Console.
+function navItemsForRole() {
+  const role = userRole();
+  if (!isOfficeRole(role)) {
+    const own = dashboardRouteForRole(role);
+    return [{ route: own, label: own === "technician" ? "Technician" : "Customer" }];
+  }
+
+  const items = [
+    { route: "operator", label: "Dashboard" },
+    { route: "reports", label: "Reports" },
+    {
+      route: "approvals",
+      label: "Approvals",
+      count: state.approvals.filter((approval) => approval.status === "pending").length
+    },
+    { route: "system-alerts", label: "Alerts", count: adminAlerts.filter((alert) => !alert.acknowledged).length },
+    { route: "notifications", label: "Notifications" },
+    { route: "receipts", label: "Receipts" },
+    { route: "client-errors", label: "Client Errors" }
+  ];
+  if (role === "admin") items.push({ route: "main-console", label: "Main Console" });
+  return items;
+}
+
+let lastNavHtml = "";
+
 function updateNavigation(route) {
   const appNav = document.querySelector("#appNav");
   const publicLinks = document.querySelectorAll(".public-link");
   const signOutBtnGlobal = document.querySelector("#signOutBtnGlobal");
-  const allowedRoutes = allowedDashboardRoutes();
   // A password reset link establishes a real currentUser via a short-lived
   // recovery session, but showing the full portal nav here would invite
   // clicking into a dashboard mid-reset. Treat this page as logged-out for
@@ -6783,11 +6716,25 @@ function updateNavigation(route) {
     link.hidden = isLoggedIn;
   });
 
-  document.querySelectorAll("[data-route]").forEach((link) => {
-    const linkRoute = link.dataset.route;
-    link.hidden = isLoggedIn && !allowedRoutes.includes(linkRoute);
-    link.classList.toggle("is-active", linkRoute === route);
-  });
+  if (!appNav || !isLoggedIn) return;
+
+  const html = navItemsForRole()
+    .map(
+      (item) =>
+        `<a href="${item.route}.html" data-route="${item.route}"${
+          item.route === route ? ' class="is-active" aria-current="page"' : ""
+        }>${escapeHtml(item.label)}${
+          item.count ? ` <span class="nav-count" aria-label="${item.count} waiting">${item.count}</span>` : ""
+        }</a>`
+    )
+    .join("");
+  // Only touch the DOM when something changed - render() runs on every
+  // update, and rebuilding the menu each time would reset its scroll.
+  if (html !== lastNavHtml) {
+    appNav.innerHTML = html;
+    lastNavHtml = html;
+  }
+  appNav.classList.toggle("is-office", isOfficeRole());
 }
 
 function bindEvents() {
@@ -6820,7 +6767,7 @@ function bindEvents() {
       const ticketId = button.dataset.ticket;
       const status = button.dataset.status;
       // Was technician-only - an agent or admin resolving directly (from
-      // the Agent Desk, the CEO Console, or an admin "viewing as" another
+      // the Operator dashboard, or the CEO previewing another
       // portal) bypassed this form entirely, so the ticket got marked
       // Resolved with no service call number, notes or receipt on file
       // and nothing on screen explained why. Only staff can even see a

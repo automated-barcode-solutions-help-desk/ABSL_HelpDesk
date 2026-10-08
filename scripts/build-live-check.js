@@ -334,7 +334,7 @@ WHERE n.nspname = 'public'
   AND p.prosecdef
   AND p.prorettype <> 'trigger'::regtype
   AND has_function_privilege('anon', p.oid, 'EXECUTE')
-  AND p.proname NOT IN ('current_role', 'is_staff', 'is_admin', 'can_view_ticket', 'can_access_ticket_file')
+  AND p.proname NOT IN ('current_role', 'is_staff', 'is_admin', 'is_office', 'can_view_ticket', 'can_access_ticket_file')
   AND NOT EXISTS (SELECT 1 FROM pg_depend d WHERE d.classid = 'pg_proc'::regclass AND d.objid = p.oid AND d.deptype = 'e');
 
 

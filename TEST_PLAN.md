@@ -33,8 +33,9 @@ Register all of them at `register.html` and verify each email.
 
 Three things to know about this cast:
 
-- **The admin doubles as the agent.** An admin can open all four portals, so
-  everywhere this plan says "as Agent", use the admin account on the Agent Desk.
+- **The admin (CEO) doubles as an operator.** It uses the same Operator
+  dashboard as every operator, plus the Main Console, so everywhere this plan
+  says "as Operator", use the admin account on the Operator dashboard.
 - **The technician registers as a technician on purpose.** That account starts
   as a pending customer, which is exactly what tests 4–7 need. You approve it
   properly in test 8.
@@ -56,7 +57,7 @@ A login lives in browser storage, so one browser holds one account. Tests
 
 | Window | Account |
 |---|---|
-| Chrome, normal | Admin (also used as the Agent) |
+| Chrome, normal | Admin (also used as an Operator) |
 | Chrome, incognito | Technician |
 | Edge or Firefox | Customer |
 
@@ -89,11 +90,12 @@ A login lives in browser storage, so one browser holds one account. Tests
       order by p.created_at desc limit 3;
       ```
       → `role = customer`, `approval_status = pending`, `requested_role = technician`. 🔒
-- [ ] **8.** Sign in as Admin → **CEO Console** → **User Approvals**.
+- [ ] **8.** Sign in as Admin → **Operator dashboard** → **User Approvals**.
       → The technician's request is listed with a `requests: technician` badge.
       Press **Approve as technician**. That account can now reach the Field App.
-- [ ] **9.** As Admin, check the nav: all four portals, purple accent, **CEO Console** heading.
-      As Customer, check the nav: **only Customer**. No Agent, Technician or CEO tab.
+- [ ] **9.** As Admin, check the menu: Dashboard, Reports, Approvals, Alerts, Notifications,
+      Receipts, Client Errors and **Main Console**, with the **Operator** heading.
+      As Customer, check the menu: **only Customer**.
 
 ## Part 2 — Raising a ticket · Diagrams 5, 9, 11
 
@@ -116,11 +118,11 @@ As **Customer**.
 - [ ] **17.** Check the inbox for a *"Ticket created"* email.
       → Arrives — once the worker is running (Part 7). Until then it sits in the queue.
 
-## Part 3 — The agent's work · Diagrams 6, 7, 10
+## Part 3 — The operator's work · Diagrams 6, 7, 10
 
-As **Admin**, on the **Agent Desk**.
+As **Admin**, on the **Operator dashboard**.
 
-- [ ] **18.** Open the Agent Desk.
+- [ ] **18.** Open the Operator dashboard.
       → The ticket shows the **customer's real name and "Cargills Food City TEST"** —
       not the literal words "Customer" and "Company".
 - [ ] **19.** Type part of the ticket number into the search box.
@@ -167,7 +169,7 @@ to the technician first (test 29) if the status buttons are not offered.
 - [ ] **33.** After confirming.
       → Stock drops by exactly 1, and the part appears under **Parts used**.
 - [ ] **34.** Press **Work** repeatedly until that part reaches its reorder level.
-      → A **Low stock** alert appears in the CEO Console alerts panel.
+      → A **Low stock** alert appears in the Operator dashboard's System Alerts panel.
 - [ ] **35.** With no job open, or on a job assigned to someone else, press **Work**.
       → Refused: *"You can only take parts against a job assigned to you."*
 - [ ] **36.** *(Needs Technician B.)* Select Technician B, reason *"fully booked today"*,
@@ -184,8 +186,8 @@ to the technician first (test 29) if the status buttons are not offered.
 - [ ] **39.** As Customer, open the closed ticket.
       → No Assign panel, no Delete button, and no status buttons beyond what a
       customer may do.
-- [ ] **40.** As Admin, delete a ticket → it disappears. Check the Agent Desk as a
-      non-admin — Delete is not offered at all.
+- [ ] **40.** As Admin, delete a ticket → it disappears. Check the Technician Field App as a
+      technician — Delete is not offered at all.
 - [ ] **41.** As Admin → **Company Limit** → select **Cargills Food City TEST** → set to 2 → update.
       → Success, and the displayed limit changes.
 - [ ] **42.** Register a third account on Cargills Food City TEST, exceeding the limit.
@@ -206,7 +208,7 @@ to the technician first (test 29) if the status buttons are not offered.
 - [ ] **46.** Set a deliberately wrong `RESEND_API_KEY`, create a ticket, run the worker
       five times.
       → The notification reaches `dead_letter` and a **critical alert** appears in the
-      CEO Console. Restore the real key afterwards.
+      Operator dashboard. Restore the real key afterwards.
 
 ## Part 8 — Only breaks in production
 
@@ -232,14 +234,14 @@ migrations 0007–0016 applied — run `supabase/diagnose.sql` and check every
       without filling in the service call number or choosing a photo.
       → The form refuses to submit until both are provided — no way to mark
       the job resolved without them.
-- [ ] **52.** As Admin, resolve a *different* ticket directly from the **Agent
-      Desk** (not the Technician Field App).
+- [ ] **52.** As Admin, resolve a *different* ticket directly from the **Operator
+      dashboard** (not the Technician Field App).
       → The same evidence form appears. Service call number and photo are
       required for **every** role that resolves a ticket, not technicians only.
 - [ ] **53.** As Customer, open the ticket resolved in test 52.
       → The service call number and the technician's resolution notes are
       both shown in plain text on your copy of the ticket.
-- [ ] **54.** As Admin → **CEO Console** → **Receipts**, open the receipt for
+- [ ] **54.** As Admin → **Operator dashboard** → **Receipts**, open the receipt for
       that same ticket.
       → Shows the service call number and resolution notes, and the receipt
       photo itself opens full size.
@@ -253,11 +255,11 @@ migrations 0007–0016 applied — run `supabase/diagnose.sql` and check every
 - [ ] **57.** As the uploader of an ordinary photo (not the receipt), press
       **Delete** on it.
       → Removed immediately — gone from the gallery on a refresh.
-- [ ] **58.** As Admin → **CEO Console** → **User Approvals**, reject one
+- [ ] **58.** As Admin → **Operator dashboard** → **User Approvals**, reject one
       pending registration with a reason typed in, then approve a different one.
       → The rejected applicant's inbox gets an email with that reason; the
       approved applicant's inbox gets "approved, log in" instead.
-- [ ] **59.** As Agent/Admin → **Reports**, search with **Status** set to
+- [ ] **59.** As Operator/Admin → **Reports**, search with **Status** set to
       *Resolved* and **Priority** set to *High*, nothing else filled in.
       → Only High-priority Resolved tickets are listed — the two filters
       narrow the result together, not separately.
@@ -278,7 +280,7 @@ migrations 0007–0016 applied — run `supabase/diagnose.sql` and check every
 A ticket used to only exist if a customer raised it through the portal. Needs
 migration 0017 applied.
 
-- [ ] **63.** As Technician (or Agent), press **📞 Log a Call-In Job**. Type an
+- [ ] **63.** As Technician (or Operator), press **📞 Log a Call-In Job**. Type an
       existing company name (e.g. **Cargills Food City TEST**), a made-up
       caller name and phone, and a problem, then submit.
       → A real ticket number is issued. Its detail panel shows **Caller**
@@ -308,7 +310,7 @@ Needs migration 0018 applied.
 - [ ] **68.** Submit choosing **Installation**.
       → The ticket card and detail panel both show an **Installation**
       badge/fact alongside the usual status and priority.
-- [ ] **69.** As Agent/Admin → **Reports**, filter by **Job Type = Service**
+- [ ] **69.** As Operator/Admin → **Reports**, filter by **Job Type = Service**
       together with any other filter.
       → Only Service jobs matching the rest of the filters are listed, and
       the exported spreadsheet includes a Job Type column.
