@@ -106,6 +106,19 @@ function jobStatusLabel(status, technicianId) {
   return "New";
 }
 
+/**
+ * A technician's own view of a job they hold. New until they open it after
+ * it was given to them, then Assigned until work starts. A job the customer
+ * has closed was finished all the same, so it counts as Resolved.
+ */
+const MY_JOB_STATUS_LABELS = ["New", "Assigned", "Ongoing", "Resolved"];
+
+function myJobStatusLabel(status, opened) {
+  if (status === "in_progress") return "Ongoing";
+  if (status === "resolved" || status === "closed") return "Resolved";
+  return opened ? "Assigned" : "New";
+}
+
 function formatProblemDescription(selectedProblems, customDescription) {
   const problems = Array.isArray(selectedProblems)
     ? selectedProblems.map((p) => String(p || "").trim()).filter(Boolean)
@@ -475,6 +488,8 @@ if (typeof module !== "undefined" && module.exports) {
     JOB_TYPE_LABELS,
     JOB_STATUS_LABELS,
     jobStatusLabel,
+    MY_JOB_STATUS_LABELS,
+    myJobStatusLabel,
     localDateKey,
     dateFromKey,
     formatLongDate,

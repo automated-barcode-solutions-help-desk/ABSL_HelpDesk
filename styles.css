@@ -2389,3 +2389,18 @@ body.report-fullscreen-open {
     flex: 0 0 auto;
   }
 }
+
+/* --- Technician status cards ---
+   New / Assigned / Ongoing / Resolved open My Job Reports filtered to that
+   status, so they look like the other cards but behave like links. */
+a.stat-card-link {
+  display: block;
+  color: inherit;
+  text-decoration: none;
+  cursor: pointer;
+}
+
+a.stat-card-link:hover,
+a.stat-card-link:focus-visible {
+  border-color: var(--teal);
+}

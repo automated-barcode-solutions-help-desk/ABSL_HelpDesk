@@ -37,6 +37,7 @@ const files = [
   "receipts.html",
   "client-errors.html",
   "reports.html",
+  "my-reports.html",
   "404.html",
   "app.js",
   "helpers.js",

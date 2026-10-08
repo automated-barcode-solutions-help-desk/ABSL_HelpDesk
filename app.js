@@ -64,7 +64,7 @@ const portals = {
     name: "Technician Field App",
     tagline: "Your assigned jobs and the parts you use",
     accent: "technician",
-    loads: ["tickets", "comments", "inventory", "technicians", "staff", "companies"]
+    loads: ["tickets", "comments", "inventory", "technicians", "staff", "companies", "myJobs"]
   }
 };
 
@@ -733,6 +733,8 @@ function openLogTicketModal() {
       saveState();
       await loadRealCompanies();
       await loadRealTickets();
+      // A job you logged for yourself isn't new to you.
+      await noteJobOpened(data.id);
     } catch (err) {
       showToast(friendlyError(err), "error");
       if (submitBtn) submitBtn.disabled = false;
@@ -804,6 +806,10 @@ const WELCOME_TOUR_ROLE_STEPS = {
     {
       title: "Log a Job",
       body: "**➕ Log a Job** is for work that didn't come through the portal — a customer who phoned you, or a job you need to do yourself. Whatever you log is assigned to you, unless you tick **Open it to every technician**; you can also hand it to a colleague from the job later."
+    },
+    {
+      title: "Your job counts and reports",
+      body: "The **New**, **Assigned**, **Ongoing** and **Resolved** cards at the top count your jobs — tap one to list them. A job is **New** until you open it. **My Job Reports** in the menu bar filters all your jobs and downloads them to Excel or prints them."
     }
   ],
   operator: [
@@ -1165,6 +1171,10 @@ const mainConsoleRoutes = ["main-console"];
 // office-only regardless, but there is no reason to even show the link).
 const staffReportRoutes = ["reports"];
 
+// My Job Reports: the same report page, fed only the signed-in technician's
+// own jobs (my_job_report() in 0034). Technicians only.
+const technicianReportRoutes = ["my-reports"];
+
 function currentRoute() {
   const pageName = window.location.pathname.split("/").pop().replace(".html", "");
   if (
@@ -1175,6 +1185,7 @@ function currentRoute() {
     officeListRoutes.includes(pageName) ||
     mainConsoleRoutes.includes(pageName) ||
     staffReportRoutes.includes(pageName) ||
+    technicianReportRoutes.includes(pageName) ||
     legacyRoutes[pageName]
   ) {
     return pageName;
@@ -1209,6 +1220,7 @@ function canAccessRoute(route) {
   if (officeListRoutes.includes(route)) return Boolean(currentUser) && isOfficeRole();
   if (mainConsoleRoutes.includes(route)) return Boolean(currentUser) && userRole() === "admin";
   if (staffReportRoutes.includes(route)) return Boolean(currentUser) && isOfficeRole();
+  if (technicianReportRoutes.includes(route)) return Boolean(currentUser) && userRole() === "technician";
   if (!dashboardRoutes.includes(route) || !currentUser) return false;
   return allowedDashboardRoutes().includes(route);
 }
@@ -1236,7 +1248,8 @@ function routeLabel(route) {
     "system-alerts": "System Alerts",
     receipts: "Resolution Receipts",
     "client-errors": "Client Errors",
-    reports: "Reports"
+    reports: "Reports",
+    "my-reports": "My Job Reports"
   };
   return labels[route] || "Page";
 }
@@ -1592,6 +1605,7 @@ async function openTicket(ticketId) {
 
   await loadTicketDetail(ticketId);
   render();
+  await noteJobOpened(ticketId);
 }
 
 async function changeRealTicketStatus(ticketId, newStatus, expectedVersion, serviceCallNumber = null, resolutionNotes = null) {
@@ -1869,6 +1883,8 @@ async function assignTechnician(ticketId, technicianId, reason) {
 
     await loadRealSupportData({ shouldRender: false });
     await loadTicketDetail(ticketId);
+    // Taking a job yourself means you're looking at it.
+    if (nextTechnicianId && nextTechnicianId === currentProfile?.id) await noteJobOpened(ticketId);
   } catch (err) {
     showToast(friendlyError(err), "error");
   } finally {
@@ -3048,6 +3064,56 @@ async function logClientError(message, stack) {
   }
 }
 
+// The signed-in technician's own jobs, with whether they have opened each
+// one - the New / Assigned / Ongoing / Resolved counts on their dashboard.
+// My Job Reports reads the same rows, so a live update refreshes an open
+// report too.
+let myJobs = [];
+
+async function loadMyJobs() {
+  if (!supabaseClient || userRole() !== "technician") return;
+
+  const { data, error } = await supabaseClient.rpc("my_job_report");
+  if (error) {
+    // Before 0034 is applied the counts simply stay empty.
+    console.error(error);
+    return;
+  }
+  myJobs = data || [];
+
+  if (technicianReportRoutes.includes(currentRoute()) && reportDataStatus === "ready") {
+    reportData = myJobs;
+    reportDataLoadedAt = new Date();
+    const type = reportType(reportUi.generated?.typeKey);
+    if (type) buildGeneratedReport(type, reportUi.generated.params);
+  }
+}
+
+function myJobCounts() {
+  const counts = Object.fromEntries(MY_JOB_STATUS_LABELS.map((label) => [label, 0]));
+  myJobs.forEach((job) => {
+    counts[myJobStatusLabel(job.status, job.opened)] += 1;
+  });
+  return counts;
+}
+
+// Opening a job you hold moves it from New to Assigned (0034). Only your
+// own jobs; the database ignores anything else anyway.
+async function noteJobOpened(ticketId) {
+  if (!supabaseClient || userRole() !== "technician" || !isUuid(ticketId)) return;
+  const ticket = state.tickets.find((item) => item.id === ticketId);
+  if (!ticket || ticket.assignedTechnicianId !== currentProfile?.id) return;
+  if (myJobs.find((job) => job.id === ticketId)?.opened) return;
+
+  const { error } = await supabaseClient.rpc("mark_job_opened", { p_ticket_id: ticketId });
+  if (error) {
+    console.error(error);
+    return;
+  }
+  await loadMyJobs();
+  render();
+}
+
 async function loadRealSupportData(options = {}) {
   const shouldRender = options?.shouldRender !== false;
 
@@ -3070,7 +3136,8 @@ async function loadRealSupportData(options = {}) {
     notifications: loadRealNotifications,
     alerts: loadRealAdminAlerts,
     receipts: loadRealReceipts,
-    clientErrors: loadRealClientErrors
+    clientErrors: loadRealClientErrors,
+    myJobs: loadMyJobs
   };
 
   try {
@@ -3206,6 +3273,13 @@ function renderStats() {
       (ticket) => ticket.assignedTechnicianId === currentProfile?.id
     ).length;
     cards.push(`<article class="stat-card"><span class="muted">My jobs</span><strong>${mine}</strong></article>`);
+    // Each count opens My Job Reports already filtered to it.
+    const counts = myJobCounts();
+    MY_JOB_STATUS_LABELS.forEach((label) => {
+      cards.push(
+        `<a class="stat-card stat-card-link" href="my-reports.html#status=${label}" title="List your ${label.toLowerCase()} jobs"><span class="muted">${label}</span><strong>${counts[label]}</strong></a>`
+      );
+    });
     cards.push(`<article class="stat-card"><span class="muted">Low stock items</span><strong>${data.lowStock}</strong></article>`);
   }
 
@@ -3504,7 +3578,15 @@ const REPORT_COLUMNS = {
   description: { label: "Job Description", kind: "text", wide: true, get: describeJob },
   technicianNotes: { label: "Technician Notes", kind: "text", wide: true, get: (r) => r.technician_notes },
   resolution: { label: "Resolution", kind: "text", wide: true, get: (r) => r.resolution_notes },
-  resolvedDate: { label: "Resolved Date", kind: "date", get: (r) => r.resolved_at }
+  resolvedDate: { label: "Resolved Date", kind: "date", get: (r) => r.resolved_at },
+  // My Job Report only: the technician's own New/Assigned/Ongoing/Resolved.
+  myJobStatus: {
+    label: "Job Status",
+    kind: "select",
+    options: MY_JOB_STATUS_LABELS,
+    get: (r) => myJobStatusLabel(r.status, r.opened)
+  },
+  assignedDate: { label: "Assigned Date", kind: "date", get: (r) => r.assigned_at }
 };
 
 // requires: the one choice a report can't run without. filters: the report
@@ -3603,11 +3685,28 @@ const REPORT_TYPES = [
       "resolvedDate"
     ],
     title: () => "All Jobs Report"
+  },
+  {
+    // A technician's own jobs only - the data itself comes from
+    // my_job_report(), which reads who they are from the login.
+    key: "my",
+    label: "My Job Report",
+    audience: "technician",
+    filters: ["myJobStatus", "jobType", "dateRange", "serviceCall", "customerName"],
+    columns: ["date", "serviceCall", "customer", "jobType", "myJobStatus", "assignedDate", "resolvedDate"],
+    title: (c) => `My Job Report – ${c.myName}`
   }
 ];
 
+// Operators and the CEO get the six system-wide reports; a technician gets
+// only their own.
+function visibleReportTypes() {
+  const audience = isOfficeRole() ? "office" : userRole() === "technician" ? "technician" : "";
+  return audience ? REPORT_TYPES.filter((type) => (type.audience || "office") === audience) : [];
+}
+
 function reportType(key) {
-  return REPORT_TYPES.find((type) => type.key === key) || null;
+  return visibleReportTypes().find((type) => type.key === key) || null;
 }
 
 function emptyReportParams() {
@@ -3624,7 +3723,9 @@ function emptyReportParams() {
     ticketNumber: "",
     installationNumber: "",
     referenceNumber: "",
-    description: ""
+    description: "",
+    myJobStatus: "",
+    customerName: ""
   };
 }
 
@@ -3662,18 +3763,25 @@ async function loadReportData({ force = false } = {}) {
   reportDataStatus = "loading";
   render();
 
+  // Operators read every job; a technician only ever their own - the
+  // database decides that from the login, not from anything sent here.
+  const source = isOfficeRole() ? "report_jobs" : "my_job_report";
+
   try {
-    const { data, error } = await supabaseClient.rpc("report_jobs");
+    const { data, error } = await supabaseClient.rpc(source);
     if (error) throw error;
     reportData = data || [];
     reportDataStatus = "ready";
     reportDataError = "";
     reportDataLoadedAt = new Date();
+    if (source === "my_job_report") myJobs = reportData;
   } catch (err) {
     const message = String(err?.message || err || "");
     reportDataStatus = "error";
-    reportDataError = /report_jobs/i.test(message)
-      ? "Reports need database update 0028 (0028_reports_numbers_and_other_job_type.sql). Ask your admin to run it in Supabase."
+    reportDataError = message.includes(source)
+      ? source === "report_jobs"
+        ? "Reports need database update 0028 (0028_reports_numbers_and_other_job_type.sql). Ask your admin to run it in Supabase."
+        : "My Job Reports need database update 0034 (0034_technician_job_reports.sql). Ask your admin to run it in Supabase."
       : friendlyError(err);
   }
 }
@@ -3726,6 +3834,7 @@ function reportContext(type, params) {
   const customer = reportCustomerOptions().find((company) => company.id === params.customerId);
 
   return {
+    myName: currentProfile?.full_name || currentUser?.email || "Technician",
     technicianName: technician?.name || "",
     customerName: customer?.name || "",
     periodLabel: reportPeriodLabel(range.from, range.to),
@@ -3762,6 +3871,16 @@ function applyReportParams(type, params, rows) {
     if (uses("installationNumber") && !contains(row.installation_number, params.installationNumber)) return false;
     if (uses("referenceNumber") && !contains(row.reference_number, params.referenceNumber)) return false;
     if (uses("description") && !contains(describeJob(row), params.description)) return false;
+    if (uses("myJobStatus") && params.myJobStatus && myJobStatusLabel(row.status, row.opened) !== params.myJobStatus) {
+      return false;
+    }
+    if (
+      uses("customerName") &&
+      params.customerName &&
+      ![row.company_name, row.caller_name, row.customer_name].some((value) => contains(value, params.customerName))
+    ) {
+      return false;
+    }
     return true;
   });
 }
@@ -3786,6 +3905,8 @@ function reportParamSummary(type, params, context) {
   }
   if (uses("referenceNumber") && params.referenceNumber) parts.push(`Reference No: ${params.referenceNumber}`);
   if (uses("description") && params.description) parts.push(`Description contains: ${params.description}`);
+  if (uses("myJobStatus") && params.myJobStatus) parts.push(`Job Status: ${params.myJobStatus}`);
+  if (uses("customerName") && params.customerName) parts.push(`Customer: ${params.customerName}`);
   return parts;
 }
 
@@ -3985,6 +4106,17 @@ function reportFilterField(name, type) {
       return reportInputField("rp-reference-number", "referenceNumber", "Reference No", p.referenceNumber, "Search");
     case "description":
       return reportInputField("rp-description", "description", "Fault / Job Description", p.description, "Contains…");
+    case "myJobStatus":
+      return reportSelectField(
+        "rp-my-job-status",
+        "myJobStatus",
+        "Job Status",
+        MY_JOB_STATUS_LABELS.map((label) => ({ value: label, label })),
+        p.myJobStatus,
+        "All"
+      );
+    case "customerName":
+      return reportInputField("rp-customer-name", "customerName", "Customer Name", p.customerName, "Search");
     default:
       return "";
   }
@@ -4006,25 +4138,30 @@ function reportDataNotice() {
 function reportsPage() {
   const type = reportType(reportUi.typeKey);
   const ready = reportDataStatus === "ready";
+  const types = visibleReportTypes();
 
   return `
     <section class="panel report-controls">
       <div class="panel-title">
-        <h2>Reports</h2>
+        <h2>${isOfficeRole() ? "Reports" : "My Job Reports"}</h2>
         <a class="secondary-button" href="${dashboardRouteForRole()}.html">Back</a>
       </div>
       ${reportDataNotice()}
       <form id="reportParamsForm" class="report-params" autocomplete="off" novalidate>
-        <div class="field report-type-field">
+        ${
+          types.length > 1
+            ? `<div class="field report-type-field">
           <label for="reportType">Report Type</label>
           <select id="reportType" name="type">
             <option value="">Select Report Type…</option>
-            ${REPORT_TYPES.map(
+            ${types.map(
               (option) =>
                 `<option value="${option.key}" ${option.key === reportUi.typeKey ? "selected" : ""}>${escapeHtml(option.label)}</option>`
             ).join("")}
           </select>
-        </div>
+        </div>`
+            : ""
+        }
         ${
           type
             ? `<h3 class="report-filters-heading">Filters</h3>
@@ -4112,6 +4249,22 @@ function reportBodyHtml(type, rows) {
           .join("")}</tr>`
     )
     .join("");
+}
+
+// My Job Reports opens straight onto the technician's report - there is only
+// one - filtered by the dashboard card they tapped, if any.
+function prepareMyReport() {
+  if (reportUi.typeKey !== "my") {
+    reportUi = { ...defaultReportUi(), typeKey: "my" };
+    // "#status=New" from a dashboard card. A fragment survives the
+    // my-reports.html -> /my-reports redirect; a query string may not.
+    const status =
+      new URLSearchParams(window.location.hash.slice(1)).get("status") ||
+      new URLSearchParams(window.location.search).get("status");
+    if (MY_JOB_STATUS_LABELS.includes(status)) reportUi.params.myJobStatus = status;
+  }
+  const type = reportType("my");
+  if (type && reportDataStatus === "ready" && !reportUi.generated) buildGeneratedReport(type, reportUi.params);
 }
 
 function reportPreviewHtml() {
@@ -4217,7 +4370,9 @@ function readReportParams(form) {
     ticketNumber: get("ticketNumber"),
     installationNumber: get("installationNumber"),
     referenceNumber: get("referenceNumber"),
-    description: get("description")
+    description: get("description"),
+    myJobStatus: get("myJobStatus"),
+    customerName: get("customerName")
   };
 }
 
@@ -5405,7 +5560,7 @@ const GUIDE_NAVIGATION = [
   },
   {
     title: "Menu bar",
-    body: "Just below it. Customers and technicians see their own portal. Operators see every section of the Operator interface — Dashboard, Reports, Approvals, Alerts, Notifications, Receipts and Client Errors — and the CEO also sees **Main Console**."
+    body: "Just below it. Customers see their own portal; technicians see theirs and **My Job Reports**. Operators see every section of the Operator interface — Dashboard, Reports, Approvals, Alerts, Notifications, Receipts and Client Errors — and the CEO also sees **Main Console**."
   },
   {
     title: "Page header",
@@ -5506,6 +5661,22 @@ const ROLE_GUIDES = [
           "A customer phoned you: enter the company, the caller's name and phone, the job type and the problem — the job is assigned to you.",
           "A job you need to do yourself, with no caller: tick **This is my own job** — it's assigned to you straight away.",
           "Can't take it right now? Tick **Open it to every technician** instead, and it goes to Open Jobs."
+        ]
+      },
+      {
+        title: "Your job counts",
+        steps: [
+          "The cards at the top count your jobs: **New** (given to you, not opened yet), **Assigned** (opened, not started), **Ongoing** (In Progress) and **Resolved** (resolved or closed).",
+          "Tap a card to see exactly those jobs in My Job Reports."
+        ]
+      },
+      {
+        title: "My Job Reports",
+        steps: [
+          "Open **My Job Reports** from the menu bar or the button next to My Jobs. It lists every job assigned to you — only yours.",
+          "Filter by **Job Status**, **Job Type**, **From/To Date**, **Service Call No** or **Customer Name** (any together), then press **Generate Report**. **Reset Filters** starts again.",
+          "In the table, sort any column by its heading, filter each column from the row under the headings, or search the whole report.",
+          "**Download Excel** saves a formatted .xlsx and **Print Report** prints just the report — both contain exactly the rows you're looking at."
         ]
       }
     ]
@@ -6098,6 +6269,7 @@ function technicianView() {
           <h2>${isMine ? "My Jobs" : "Technician Jobs"}</h2>
           <div class="action-row">
             <span class="badge badge-muted">${assigned.length} assigned</span>
+            <a class="secondary-button compact-button" href="my-reports.html">My Job Reports</a>
             <button class="secondary-button compact-button" type="button" id="logTicketBtn">➕ Log a Job</button>
           </div>
         </div>
@@ -6453,7 +6625,7 @@ function render() {
 
   updateNavigation(route);
   // Print styles for reports only apply on the Reports page.
-  document.body.classList.toggle("reports-page", route === "reports");
+  document.body.classList.toggle("reports-page", route === "reports" || route === "my-reports");
 
   if (!currentRoute()) {
     navigateTo(route);
@@ -6558,7 +6730,7 @@ function render() {
     return;
   }
 
-  if (staffReportRoutes.includes(route)) {
+  if (staffReportRoutes.includes(route) || technicianReportRoutes.includes(route)) {
     if (!currentUser) {
       app.innerHTML = loginPage(`Please login before opening ${routeLabel(route)}.`);
       bindEvents();
@@ -6590,8 +6762,12 @@ function render() {
       selection = null;
     }
 
+    const myReport = technicianReportRoutes.includes(route);
+    if (myReport) prepareMyReport();
     app.innerHTML =
-      pageHeading("Reports", "Technician, customer, date, fault, service call and all-jobs reports - filter, then open, download or print.") +
+      (myReport
+        ? pageHeading("My Job Reports", "Every job assigned to you - filter it, then download or print.")
+        : pageHeading("Reports", "Technician, customer, date, fault, service call and all-jobs reports - filter, then open, download or print.")) +
       reportsPage();
     bindEvents();
 
@@ -6676,10 +6852,13 @@ function render() {
 // row, and the CEO also has the Main Console.
 function navItemsForRole() {
   const role = userRole();
-  if (!isOfficeRole(role)) {
-    const own = dashboardRouteForRole(role);
-    return [{ route: own, label: own === "technician" ? "Technician" : "Customer" }];
+  if (role === "technician") {
+    return [
+      { route: "technician", label: "Technician" },
+      { route: "my-reports", label: "My Job Reports" }
+    ];
   }
+  if (!isOfficeRole(role)) return [{ route: "customer", label: "Customer" }];
 
   const items = [
     { route: "operator", label: "Dashboard" },

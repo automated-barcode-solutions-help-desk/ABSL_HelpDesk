@@ -61,6 +61,17 @@ test("jobTypeLabel covers every allowed value and defaults to Fault", () => {
   assert.equal(h.jobTypeLabel(undefined), "Fault");
 });
 
+test("myJobStatusLabel: New until opened, then Assigned, Ongoing, Resolved", () => {
+  assert.equal(h.myJobStatusLabel("new", false), "New");
+  assert.equal(h.myJobStatusLabel("new", true), "Assigned");
+  assert.equal(h.myJobStatusLabel("in_progress", false), "Ongoing");
+  assert.equal(h.myJobStatusLabel("in_progress", true), "Ongoing");
+  assert.equal(h.myJobStatusLabel("resolved", true), "Resolved");
+  // A job the customer closed was still finished by the technician.
+  assert.equal(h.myJobStatusLabel("closed", true), "Resolved");
+  assert.deepEqual(h.MY_JOB_STATUS_LABELS, ["New", "Assigned", "Ongoing", "Resolved"]);
+});
+
 test("jobStatusLabel derives Assigned from a new ticket with a technician", () => {
   assert.equal(h.jobStatusLabel("new", null), "New");
   assert.equal(h.jobStatusLabel("new", "tech-id"), "Assigned");

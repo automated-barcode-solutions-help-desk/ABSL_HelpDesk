@@ -92,6 +92,7 @@ app.js                  views, state, data access
 styles.css              design system and portal theming
 customer|operator|technician.html      the three interfaces
 main-console.html       the CEO's Manage Staff page
+my-reports.html         a technician's own job report (my_job_report, 0034)
 agent|admin|staff-roles.html            old addresses, forwarded
 login|register|index|404.html           public pages
 vendor/                 pinned Supabase client, served from this site
