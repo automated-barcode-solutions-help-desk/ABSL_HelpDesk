@@ -4,9 +4,25 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
 const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
 const serviceRoleKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
-const resendApiKey = Deno.env.get("RESEND_API_KEY")!;
+const portalUrl = Deno.env.get("PORTAL_URL") || "https://helpdesk.automatedbarcode.net";
+
+// Two ways to send, chosen by which secrets are set:
+//   * Your own mail server - SMTP_HOST, SMTP_USER, SMTP_PASS (and optionally
+//     SMTP_PORT, SMTP_FROM). Used whenever those three are set.
+//   * Resend - RESEND_API_KEY and FROM_EMAIL. Used otherwise.
+// Switching back to Resend is just removing the SMTP secrets.
+const smtpHost = Deno.env.get("SMTP_HOST") || "";
+const smtpPort = Number(Deno.env.get("SMTP_PORT") || "465");
+const smtpUser = Deno.env.get("SMTP_USER") || "";
+const smtpPass = Deno.env.get("SMTP_PASS") || "";
+// The From address must be the mailbox the worker signs in as:
+// automatedbarcode.net's DMARC policy rejects mail whose From doesn't match
+// the server that sent and signed it.
+const smtpFrom = Deno.env.get("SMTP_FROM") || `ABSL Helpdesk <${smtpUser}>`;
+const useSmtp = Boolean(smtpHost && smtpUser && smtpPass);
+
+const resendApiKey = Deno.env.get("RESEND_API_KEY") || "";
 const fromEmail = Deno.env.get("FROM_EMAIL") || "ABSL Helpdesk <no-reply@mail.automatedbarcode.net>";
-const portalUrl = Deno.env.get("PORTAL_URL") || "http://helpdesk.automatedbarcode.net";
 
 // Optional shared secret. When set, the cron job must send it as
 //   x-worker-secret: <value>
@@ -59,8 +75,216 @@ function escapeHtml(value: string): string {
   });
 }
 
-async function sendEmail(to: string, subject: string, text: string) {
-  const formattedHtml = `
+// ===== SMTP client (begin) =====
+// A small SMTP client: one message per connection, implicit TLS (port 465 -
+// Supabase Edge Functions can't open 25 or 587), sign-in with AUTH PLAIN or
+// LOGIN, a plain-text + HTML message in UTF-8. No third-party library, so
+// nothing to break when the edge runtime changes. Errors name the step that
+// failed and the server's reply - never the password.
+
+interface SmtpConfig {
+  host: string;
+  port: number;
+  user: string;
+  pass: string;
+  from: string; // "Name <address>" or "address"
+  timeoutMs?: number;
+}
+
+interface OutgoingEmail {
+  to: string;
+  subject: string;
+  text: string;
+  html: string;
+}
+
+const utf8 = new TextEncoder();
+
+function toBase64(bytes: Uint8Array): string {
+  let binary = "";
+  for (let i = 0; i < bytes.length; i += 0x8000) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+  }
+  return btoa(binary);
+}
+
+function wrap76(base64: string): string {
+  return base64.replace(/.{1,76}/g, "$&\r\n");
+}
+
+// Header values come from the database (ticket titles, names). No line break
+// may survive into a header, or it could add headers of its own.
+function oneLine(value: string): string {
+  return String(value).replace(/[\r\n]+/g, " ").trim();
+}
+
+function addressOf(mailbox: string): string {
+  const match = /<([^<>]+)>/.exec(mailbox);
+  return oneLine(match ? match[1] : mailbox);
+}
+
+// RFC 2047: anything beyond plain ASCII travels as UTF-8 "encoded words",
+// each short enough to keep header lines within the limit.
+function encodeHeader(value: string): string {
+  const clean = oneLine(value);
+  if (/^[\x20-\x7e]*$/.test(clean)) return clean;
+  const chars = Array.from(clean);
+  const words: string[] = [];
+  for (let i = 0; i < chars.length; i += 15) {
+    words.push(`=?UTF-8?B?${toBase64(utf8.encode(chars.slice(i, i + 15).join("")))}?=`);
+  }
+  return words.join("\r\n ");
+}
+
+function formatMailbox(mailbox: string): string {
+  const address = addressOf(mailbox);
+  const name = mailbox.includes("<") ? oneLine(mailbox.slice(0, mailbox.indexOf("<"))).replace(/^"|"$/g, "") : "";
+  return name ? `${encodeHeader(name)} <${address}>` : `<${address}>`;
+}
+
+function buildMessage(from: string, email: OutgoingEmail): string {
+  const domain = addressOf(from).split("@")[1] || "localhost";
+  const boundary = `absl-${crypto.randomUUID()}`;
+  const message = [
+    `From: ${formatMailbox(from)}`,
+    `To: <${addressOf(email.to)}>`,
+    `Subject: ${encodeHeader(email.subject)}`,
+    `Date: ${new Date().toUTCString().replace("GMT", "+0000")}`,
+    `Message-ID: <${crypto.randomUUID()}@${domain}>`,
+    "MIME-Version: 1.0",
+    `Content-Type: multipart/alternative; boundary="${boundary}"`,
+    "",
+    `--${boundary}`,
+    "Content-Type: text/plain; charset=UTF-8",
+    "Content-Transfer-Encoding: base64",
+    "",
+    wrap76(toBase64(utf8.encode(email.text))),
+    `--${boundary}`,
+    "Content-Type: text/html; charset=UTF-8",
+    "Content-Transfer-Encoding: base64",
+    "",
+    wrap76(toBase64(utf8.encode(email.html))),
+    `--${boundary}--`,
+    ""
+  ].join("\r\n");
+  // A line that starts with "." would end the message early (RFC 5321 4.5.2).
+  return message.replace(/^\./gm, "..");
+}
+
+class SmtpSession {
+  private reader: ReadableStreamDefaultReader<string>;
+  private buffered = "";
+
+  constructor(private conn: Deno.TlsConn) {
+    this.reader = conn.readable.pipeThrough(new TextDecoderStream()).getReader();
+  }
+
+  private async readLine(): Promise<string> {
+    while (!this.buffered.includes("\r\n")) {
+      const { value, done } = await this.reader.read();
+      if (done) throw new Error("the mail server closed the connection");
+      this.buffered += value;
+    }
+    const end = this.buffered.indexOf("\r\n");
+    const line = this.buffered.slice(0, end);
+    this.buffered = this.buffered.slice(end + 2);
+    return line;
+  }
+
+  // One reply, which may span several "250-..." lines.
+  async reply(): Promise<{ code: number; text: string }> {
+    const lines: string[] = [];
+    for (;;) {
+      const line = await this.readLine();
+      if (!/^\d{3}([ -]|$)/.test(line)) {
+        throw new Error(`unexpected reply from the mail server: ${line.slice(0, 200)}`);
+      }
+      lines.push(line);
+      if (line[3] !== "-") return { code: Number(line.slice(0, 3)), text: lines.join(" / ") };
+    }
+  }
+
+  async write(data: string): Promise<void> {
+    const bytes = utf8.encode(data);
+    let written = 0;
+    while (written < bytes.length) written += await this.conn.write(bytes.subarray(written));
+  }
+
+  // `step` is what an error names - never the line itself, which for a
+  // sign-in carries the password.
+  async command(line: string, expect: number[], step = line.split(" ")[0]): Promise<{ code: number; text: string }> {
+    await this.write(`${line}\r\n`);
+    const reply = await this.reply();
+    if (!expect.includes(reply.code)) {
+      throw new Error(`${step} refused by the mail server: ${reply.text.slice(0, 300)}`);
+    }
+    return reply;
+  }
+
+  async close(): Promise<void> {
+    try {
+      await this.reader.cancel();
+    } catch {
+      // already closed
+    }
+    try {
+      this.conn.close();
+    } catch {
+      // already closed
+    }
+  }
+}
+
+async function smtpConversation(session: SmtpSession, config: SmtpConfig, email: OutgoingEmail) {
+  const greeting = await session.reply();
+  if (greeting.code !== 220) throw new Error(`unexpected mail server greeting: ${greeting.text.slice(0, 300)}`);
+
+  const sender = addressOf(config.from);
+  const ehlo = await session.command(`EHLO ${sender.split("@")[1] || "localhost"}`, [250]);
+  const methods = (/AUTH[ =]([^/]*)/i.exec(ehlo.text)?.[1] || "").toUpperCase();
+
+  if (methods.includes("PLAIN") || !methods.includes("LOGIN")) {
+    await session.command(
+      `AUTH PLAIN ${toBase64(utf8.encode(`\0${config.user}\0${config.pass}`))}`,
+      [235],
+      "Sign-in"
+    );
+  } else {
+    await session.command("AUTH LOGIN", [334], "Sign-in");
+    await session.command(toBase64(utf8.encode(config.user)), [334], "Sign-in (user name)");
+    await session.command(toBase64(utf8.encode(config.pass)), [235], "Sign-in (password)");
+  }
+
+  await session.command(`MAIL FROM:<${sender}>`, [250], "Sender");
+  await session.command(`RCPT TO:<${addressOf(email.to)}>`, [250, 251], "Recipient");
+  await session.command("DATA", [354]);
+  await session.command(`${buildMessage(config.from, email)}\r\n.`, [250], "Message");
+  try {
+    await session.command("QUIT", [221]);
+  } catch {
+    // The message is already accepted.
+  }
+}
+
+async function smtpSend(config: SmtpConfig, email: OutgoingEmail): Promise<void> {
+  const conn = await Deno.connectTls({ hostname: config.host, port: config.port });
+  const session = new SmtpSession(conn);
+  const seconds = Math.round((config.timeoutMs ?? 30000) / 1000);
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`the mail server did not answer within ${seconds}s`)), config.timeoutMs ?? 30000);
+  });
+  try {
+    await Promise.race([smtpConversation(session, config, email), timeout]);
+  } finally {
+    clearTimeout(timer);
+    await session.close();
+  }
+}
+// ===== SMTP client (end) =====
+
+function emailContent(text: string): { html: string; fullText: string } {
+  const html = `
     <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #e2e8f0; border-radius: 8px; background-color: #ffffff;">
       <div style="border-bottom: 2px solid #2563eb; padding-bottom: 12px; margin-bottom: 20px;">
         <h2 style="color: #1e293b; margin: 0; font-size: 20px;">ABSL Helpdesk Notification</h2>
@@ -80,7 +304,26 @@ async function sendEmail(to: string, subject: string, text: string) {
     </div>
   `;
 
-  const fullText = `${text}\n\n---\nAccess the portal: ${portalUrl}`;
+  return { html, fullText: `${text}\n\n---\nAccess the portal: ${portalUrl}` };
+}
+
+async function sendEmail(to: string, subject: string, text: string) {
+  const { html, fullText } = emailContent(text);
+
+  if (useSmtp) {
+    if (smtpPort === 25 || smtpPort === 587) {
+      throw new Error(`SMTP_PORT ${smtpPort} is blocked for Supabase Edge Functions - use 465.`);
+    }
+    await smtpSend(
+      { host: smtpHost, port: smtpPort, user: smtpUser, pass: smtpPass, from: smtpFrom },
+      { to, subject, text: fullText, html }
+    );
+    return;
+  }
+
+  if (!resendApiKey) {
+    throw new Error("No email sender is set up: add SMTP_HOST, SMTP_USER and SMTP_PASS (or RESEND_API_KEY) to this function's secrets.");
+  }
 
   const response = await fetch("https://api.resend.com/emails", {
     method: "POST",
@@ -93,7 +336,7 @@ async function sendEmail(to: string, subject: string, text: string) {
       to,
       subject,
       text: fullText,
-      html: formattedHtml
+      html
     })
   });
 
@@ -243,7 +486,7 @@ Deno.serve(async (request) => {
       }
     }
 
-    return Response.json({ ok: true, processed: results.length, results, adminDigest });
+    return Response.json({ ok: true, processed: results.length, results, adminDigest, sender: useSmtp ? "smtp" : "resend" });
   } catch (err) {
     console.error("send-notifications crashed", err);
     return Response.json({ ok: false, error: String(err) }, { status: 500 });

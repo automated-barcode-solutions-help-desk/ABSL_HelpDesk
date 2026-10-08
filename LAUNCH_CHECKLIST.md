@@ -179,6 +179,34 @@ After deploying, put the live URL into the Site URL field from step 3.
 
 ## 6. Notification worker (20 min)
 
+The worker sends through **either** the company mail server **or** Resend:
+if `SMTP_HOST`, `SMTP_USER` and `SMTP_PASS` are set it uses the mail
+server, otherwise Resend. Switching back to Resend is just
+`supabase secrets unset SMTP_HOST SMTP_USER SMTP_PASS SMTP_PORT SMTP_FROM`.
+
+**Option A - company mail server (works without any DNS changes).**
+`automatedbarcode.net` is hosted at InMotion (mail.automatedbarcode.net,
+Exim, DKIM-signed, in the domain's SPF). Create a sending-only mailbox such
+as `noreply@automatedbarcode.net` in cPanel, then:
+
+```bash
+supabase secrets set SMTP_HOST=mail.automatedbarcode.net SMTP_PORT=465 SMTP_USER=noreply@automatedbarcode.net
+```
+
+```bash
+supabase secrets set SMTP_PASS='the mailbox password'
+```
+
+```bash
+supabase secrets set SMTP_FROM="ABSL Helpdesk <noreply@automatedbarcode.net>"
+```
+
+Port 465 only - Supabase Edge Functions cannot open 25 or 587. The From
+address must be the mailbox itself: the domain's DMARC policy is
+`p=reject` with strict alignment, so any other From is thrown away.
+
+**Option B - Resend** (needs the DNS records below verified):
+
 ```bash
 supabase secrets set RESEND_API_KEY=your_resend_key
 ```
