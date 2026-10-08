@@ -584,13 +584,26 @@ function openLogTicketModal() {
           <option>Low</option>
         </select>
       </div>
-      <label class="field inline-check" id="log-open-for-claim-row">
-        <span>Can't take this yourself right now? Open it to every technician — first to accept gets the job.</span>
-        <input type="checkbox" name="openForClaim" id="log-open-for-claim" />
-      </label>
+      <fieldset class="field yes-no-field" id="log-open-for-claim-row">
+        <legend>${
+          isTechnician
+            ? "Can't take this yourself right now? Open it to every technician — first to accept gets the job."
+            : "Open it to every technician now? First to accept gets the job."
+        } <span class="required-mark" aria-hidden="true">*</span></legend>
+        <div class="yes-no-options">
+          <label class="yes-no-option">
+            <input type="radio" name="openForClaim" value="yes" required />
+            <span>Yes — open to every technician</span>
+          </label>
+          <label class="yes-no-option">
+            <input type="radio" name="openForClaim" value="no" required />
+            <span>${isTechnician ? "No — assign it to me" : "No — keep it to assign later"}</span>
+          </label>
+        </div>
+      </fieldset>
       ${
         isTechnician
-          ? `<p class="small muted" id="log-assign-hint">This job will be assigned to you — hand it to a colleague afterwards if you can't take it.</p>`
+          ? `<p class="small muted" id="log-assign-hint" hidden>This job will be assigned to you — hand it to a colleague afterwards if you can't take it.</p>`
           : ""
       }
       <div class="modal-actions">
@@ -607,20 +620,28 @@ function openLogTicketModal() {
   const selfJobCheckbox = card.querySelector("#log-self-job");
   const callerFields = card.querySelector("#log-caller-fields");
   const openForClaimRow = card.querySelector("#log-open-for-claim-row");
-  const openForClaimCheckbox = card.querySelector("#log-open-for-claim");
-  // A technician keeps what they log unless they open it to everyone.
+  const openForClaimInputs = card.querySelectorAll('input[name="openForClaim"]');
+  const openForClaimAnswer = () => card.querySelector('input[name="openForClaim"]:checked')?.value || "";
+  // A technician keeps what they log once they answer No (or for a self-job).
   const assignHint = card.querySelector("#log-assign-hint");
   const updateAssignHint = () => {
-    if (assignHint) assignHint.hidden = openForClaimCheckbox.checked;
+    if (assignHint) assignHint.hidden = !(selfJobCheckbox.checked || openForClaimAnswer() === "no");
   };
   selfJobCheckbox.onchange = () => {
     const isSelfJob = selfJobCheckbox.checked;
     callerFields.hidden = isSelfJob;
     openForClaimRow.hidden = isSelfJob;
-    if (isSelfJob) openForClaimCheckbox.checked = false;
+    // A self-job is never opened to anyone, so there's no question to answer -
+    // disabled radios are skipped by the form's required check.
+    openForClaimInputs.forEach((input) => {
+      input.disabled = isSelfJob;
+      if (isSelfJob) input.checked = false;
+    });
     updateAssignHint();
   };
-  openForClaimCheckbox.onchange = updateAssignHint;
+  openForClaimInputs.forEach((input) => {
+    input.onchange = updateAssignHint;
+  });
 
   const logCommonCheckboxes = card.querySelectorAll(".common-problem-checkbox");
   const logTitleInput = card.querySelector("#log-title");
@@ -666,7 +687,8 @@ function openLogTicketModal() {
     const jobType = String(form.get("jobType") || "");
     const department = String(form.get("department") || "").trim();
     const location = String(form.get("location") || "").trim();
-    const openForClaim = form.get("openForClaim") === "on";
+    const openForClaimChoice = String(form.get("openForClaim") || "");
+    const openForClaim = openForClaimChoice === "yes";
     const selfJob = form.get("selfJob") === "on";
 
     if (!company) {
@@ -683,6 +705,10 @@ function openLogTicketModal() {
     }
     if (!["service", "fault", "installation", "other"].includes(jobType)) {
       showToast("Choose a job type — Service, Fault, Installation or Other.", "warning");
+      return;
+    }
+    if (!selfJob && !openForClaimChoice) {
+      showToast("Answer Yes or No: open this job to every technician?", "warning");
       return;
     }
     if (title.length < 3) {
@@ -805,7 +831,7 @@ const WELCOME_TOUR_ROLE_STEPS = {
     },
     {
       title: "Log a Job",
-      body: "**➕ Log a Job** is for work that didn't come through the portal — a customer who phoned you, or a job you need to do yourself. Whatever you log is assigned to you, unless you tick **Open it to every technician**; you can also hand it to a colleague from the job later."
+      body: "**➕ Log a Job** is for work that didn't come through the portal — a customer who phoned you, or a job you need to do yourself. Whatever you log is assigned to you, unless you answer **Yes** to opening it to every technician; you can also hand it to a colleague from the job later."
     },
     {
       title: "Your job counts and reports",
@@ -5660,7 +5686,7 @@ const ROLE_GUIDES = [
           "Press **➕ Log a Job** for work that didn't come through the portal.",
           "A customer phoned you: enter the company, the caller's name and phone, the job type and the problem — the job is assigned to you.",
           "A job you need to do yourself, with no caller: tick **This is my own job** — it's assigned to you straight away.",
-          "Can't take it right now? Tick **Open it to every technician** instead, and it goes to Open Jobs."
+          "Can't take it right now? Answer **Yes** to opening it to every technician, and it goes to Open Jobs. Answer **No** and it's assigned to you."
         ]
       },
       {
@@ -5711,7 +5737,7 @@ const ROLE_GUIDES = [
         title: "Callbacks and phone-ins",
         steps: [
           "The **Callback Queue** lists customers waiting for a call. Press **Call** (on a phone), then **Done** once you've spoken.",
-          "Use **➕ Log a Job** for a customer who phoned instead of using the portal. Tick **Open it to every technician** to release it straight away, or **This is a job nobody called in for** when there's no caller."
+          "Use **➕ Log a Job** for a customer who phoned instead of using the portal. Answer **Yes** to opening it to every technician to release it straight away (**No** keeps it to assign later), or **This is a job nobody called in for** when there's no caller."
         ]
       },
       {

@@ -2404,3 +2404,69 @@ a.stat-card-link:hover,
 a.stat-card-link:focus-visible {
   border-color: var(--teal);
 }
+
+/* --- Yes / No question ---
+   A required choice with no default (Log a Job: "Open it to every
+   technician?"), so nobody logs a job without deciding. */
+.yes-no-field {
+  border: 0;
+  padding: 0;
+  min-width: 0;
+}
+
+.yes-no-field legend {
+  padding: 0;
+  margin-bottom: 8px;
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--ink-secondary);
+  letter-spacing: -0.01em;
+}
+
+.yes-no-field .required-mark {
+  color: #dc2626;
+}
+
+.yes-no-options {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.yes-no-option {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 44px;
+  padding: 10px 14px;
+  border: 1px solid var(--line-solid);
+  border-radius: var(--radius);
+  background: var(--paper-solid);
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.field .yes-no-option input {
+  width: auto;
+  min-height: auto;
+  margin: 0;
+  flex: 0 0 auto;
+  accent-color: var(--teal);
+}
+
+.yes-no-option:has(input:checked) {
+  border-color: var(--teal);
+  background: var(--teal-light);
+}
+
+.yes-no-option:has(input:focus-visible) {
+  outline: 2px solid var(--teal);
+  outline-offset: 2px;
+}
+
+@media (max-width: 520px) {
+  .yes-no-options {
+    grid-template-columns: 1fr;
+  }
+}
