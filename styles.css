@@ -2423,7 +2423,8 @@ a.stat-card-link:focus-visible {
   letter-spacing: -0.01em;
 }
 
-.yes-no-field .required-mark {
+/* Marks a field that must be filled in. */
+.required-mark {
   color: #dc2626;
 }
 

@@ -561,9 +561,9 @@ function openLogTicketModal() {
                placeholder="Which department has the fault? (optional)" />
       </div>
       <div class="field">
-        <label for="log-location">Fault location</label>
-        <input id="log-location" name="location" maxlength="200"
-               placeholder="Where at the site is the fault? (optional)" />
+        <label for="log-location">Fault location <span class="required-mark" aria-hidden="true">*</span></label>
+        <input id="log-location" name="location" maxlength="200" required
+               placeholder="Where at the site is the fault? e.g. Main entrance, Level 2 counter" />
       </div>
       <div class="field">
         <label for="log-title">Problem Summary</label>
@@ -705,6 +705,10 @@ function openLogTicketModal() {
     }
     if (!["service", "fault", "installation", "other"].includes(jobType)) {
       showToast("Choose a job type — Service, Fault, Installation or Other.", "warning");
+      return;
+    }
+    if (!location) {
+      showToast("Enter the fault location — where at the site the fault is.", "warning");
       return;
     }
     if (!selfJob && !openForClaimChoice) {
@@ -5684,7 +5688,7 @@ const ROLE_GUIDES = [
         title: "Log a job",
         steps: [
           "Press **➕ Log a Job** for work that didn't come through the portal.",
-          "A customer phoned you: enter the company, the caller's name and phone, the job type and the problem — the job is assigned to you.",
+          "A customer phoned you: enter the company, the caller's name and phone, the job type, the fault location and the problem — the job is assigned to you.",
           "A job you need to do yourself, with no caller: tick **This is my own job** — it's assigned to you straight away.",
           "Can't take it right now? Answer **Yes** to opening it to every technician, and it goes to Open Jobs. Answer **No** and it's assigned to you."
         ]
