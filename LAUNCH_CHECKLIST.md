@@ -205,6 +205,14 @@ Port 465 only - Supabase Edge Functions cannot open 25 or 587. The From
 address must be the mailbox itself: the domain's DMARC policy is
 `p=reject` with strict alignment, so any other From is thrown away.
 
+**Option A2 - a Gmail account** (e.g. `help.automatedbarcode@gmail.com`).
+Turn on 2-Step Verification for that Google account, create an App
+Password at https://myaccount.google.com/apppasswords (16 letters, enter it
+without spaces), then set `SMTP_HOST=smtp.gmail.com`, `SMTP_PORT=465`,
+`SMTP_USER` = the Gmail address, `SMTP_PASS` = the App Password and
+`SMTP_FROM="ABSL Helpdesk <the Gmail address>"`. The From must be the Gmail
+address itself, and a free Gmail account sends at most ~500 emails a day.
+
 **Option B - Resend** (needs the DNS records below verified):
 
 ```bash
