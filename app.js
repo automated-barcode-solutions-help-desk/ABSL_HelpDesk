@@ -1,3 +1,18 @@
+// What a password-reset email's link brought with it. Read before the
+// Supabase client exists: while signing the visitor in from that link, the
+// client clears it from the address on its own, so the reset page can't look
+// for it later. A good link carries type=recovery; a used or expired one
+// carries Supabase's error instead.
+const recoveryLink = (() => {
+  const params = new URLSearchParams(window.location.hash.replace(/^#/, ""));
+  return {
+    valid: params.get("type") === "recovery",
+    error: params.get("error_description") || params.get("error_code") || params.get("error") || ""
+  };
+})();
+// Set when the client reports it has signed in from a reset link.
+let passwordRecoveryReady = false;
+
 const supabaseConfig = window.ABSL_SUPABASE || {};
 const hasSupabaseConfig = Boolean(supabaseConfig.url && supabaseConfig.anonKey);
 const supabaseClient =
@@ -5471,20 +5486,20 @@ function loginPage(message = "") {
 }
 
 function resetPasswordPage() {
-  // Supabase appends #access_token=...&type=recovery&... to the redirect
-  // URL from the reset email. Checking for it directly is synchronous and
-  // available on first render - waiting on the PASSWORD_RECOVERY auth event
-  // instead would work too, but only after an async round trip the page
-  // would otherwise render once before.
-  const hasRecoveryToken = window.location.hash.includes("type=recovery");
-
-  if (!hasRecoveryToken) {
+  // Either signal means the visitor came from a working reset link: what the
+  // link carried when the page opened (recoveryLink, read before the Supabase
+  // client cleared it from the address), or the client's own
+  // PASSWORD_RECOVERY event. Looking at the address now instead - as this
+  // used to - always found it already cleared, so every reset link showed
+  // "expired".
+  if (!recoveryLink.valid && !passwordRecoveryReady) {
     return `
       <section class="auth-page">
         <article class="panel auth-card">
           <p class="auth-kicker">Reset password</p>
           <h2>This link has expired</h2>
-          <p class="muted">Password reset links are single-use and expire after a short time. Request a new one from the login page.</p>
+          <p class="muted">Password reset links work once and expire after a short time, and asking for a new one cancels the old one. Use the newest email, or request another from the login page.</p>
+          ${recoveryLink.error ? `<p class="small muted">${escapeHtml(recoveryLink.error.replace(/\+/g, " "))}</p>` : ""}
           <a class="primary-button" href="login.html">Back to login</a>
         </article>
       </section>
@@ -7321,6 +7336,10 @@ window.addEventListener("online", async () => {
 // leaving the user clicking buttons that will all fail.
 if (supabaseClient) {
   supabaseClient.auth.onAuthStateChange((event) => {
+    if (event === "PASSWORD_RECOVERY") {
+      passwordRecoveryReady = true;
+      if (currentRoute() === "reset-password") render();
+    }
     if (event === "SIGNED_OUT" && currentUser) {
       currentUser = null;
       currentProfile = null;
