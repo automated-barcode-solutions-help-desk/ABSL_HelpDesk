@@ -6749,7 +6749,7 @@ function planUsagePanel() {
         </div>
         <button class="primary-button" type="button" data-download-backup>Download backup</button>
       </div>
-      <p class="muted small">The Free plan has no automatic backups. Download one every week and keep it in Google Drive or on a USB drive. It holds every ticket, customer, receipt and report record; photos stay in Supabase and the file lists them.</p>`;
+      <p class="muted small">A full backup, every receipt, job photo and a monthly jobs report are copied to the helpdesk Google Drive automatically (folder "ABSL Helpdesk"). "Last backup" shows the most recent copy, automatic or downloaded. Download backup gives you an extra copy right now, to keep on a USB drive. If the Drive copies ever stop for a week, a System Alert says so.</p>`;
   }
 
   return `
