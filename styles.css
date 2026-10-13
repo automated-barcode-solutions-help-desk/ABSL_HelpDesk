@@ -2534,3 +2534,129 @@ a.stat-card-link:focus-visible {
 .backup-row .badge {
   margin-left: 6px;
 }
+
+/* User Guide: languages, pictures and numbered tasks. */
+.guide[lang="si"],
+.guide-lang[lang="si"] {
+  font-family: "Noto Sans Sinhala", "Iskoola Pota", "Nirmala UI", Inter, sans-serif;
+  line-height: 1.75;
+}
+
+.guide[lang="ta"],
+.guide-lang[lang="ta"] {
+  font-family: "Noto Sans Tamil", "Latha", "Nirmala UI", Inter, sans-serif;
+  line-height: 1.75;
+}
+
+/* On-screen labels stay in English inside Sinhala and Tamil text. */
+.guide[lang="si"] strong,
+.guide[lang="ta"] strong {
+  font-family: Inter, sans-serif;
+}
+
+.guide-languages {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  width: fit-content;
+  max-width: 100%;
+  padding: 4px;
+  border: 1px solid var(--line-solid);
+  border-radius: var(--radius-pill);
+  background: var(--paper-solid);
+  box-shadow: var(--shadow-sm);
+}
+
+.guide-lang {
+  min-height: 40px;
+  padding: 6px 18px;
+  border: 0;
+  border-radius: var(--radius-pill);
+  background: transparent;
+  color: var(--ink-secondary);
+  font-size: 15px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.guide-lang.is-active {
+  background: var(--portal, var(--teal));
+  color: #ffffff;
+}
+
+.guide-hint {
+  margin: -8px 0 0;
+}
+
+.guide-task {
+  padding: 4px 0 18px;
+  border-bottom: 1px solid var(--line);
+}
+
+.guide-task:last-child {
+  border-bottom: 0;
+}
+
+.guide-task h3 {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.guide-task-number {
+  display: inline-grid;
+  place-items: center;
+  flex: none;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  background: var(--portal-soft, var(--teal-light));
+  color: var(--ink);
+  font-size: 14px;
+  font-weight: 800;
+}
+
+.guide-shots {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: 14px;
+  margin-top: 14px;
+}
+
+.guide-shot {
+  margin: 0;
+  max-width: 100%;
+}
+
+.guide-shot a {
+  display: block;
+  overflow: hidden;
+  border: 1px solid var(--line-solid);
+  border-radius: var(--radius);
+  background: #ffffff;
+  box-shadow: var(--shadow-sm);
+}
+
+.guide-shot img {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+
+/* Desktop screens across the page; phone screens at phone size, side by
+   side where there is room. Tall ones are shown whole, never cropped, so a
+   highlighted button at the bottom stays visible. */
+.guide-shot:not(.is-phone) {
+  flex: 1 1 100%;
+}
+
+.guide-shot.is-phone {
+  flex: 0 1 270px;
+}
+
+@media (max-width: 640px) {
+  .guide-shot.is-phone {
+    flex: 0 1 min(100%, 320px);
+  }
+}

@@ -18,3 +18,6 @@ config.local.js
 .claude/
 .vercel
 .env*
+
+# Whole-page screenshots from scripts/guide-screens/capture.js --survey
+guide-survey/

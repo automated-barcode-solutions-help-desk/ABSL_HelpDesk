@@ -41,6 +41,7 @@ const files = [
   "404.html",
   "app.js",
   "helpers.js",
+  "guide-content.js",
   "config.js",
   "styles.css",
   "favicon.svg",
@@ -49,7 +50,7 @@ const files = [
   "_headers"
 ];
 
-const directories = ["vendor", "icons"];
+const directories = ["vendor", "icons", "guide"];
 
 // A publish must never carry these, whatever else changes.
 const forbidden = [/\.bak$/i, /\.original$/i, /\.sql$/i, /\.env/i, /node_modules/];

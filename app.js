@@ -5695,7 +5695,11 @@ function pendingApprovalPage() {
 }
 
 // --- User Guide (help.html) --------------------------------------------
+// The text, in English, Sinhala and Tamil, is in guide-content.js, which
+// only help.html loads; the pictures are in guide/ (see
+// scripts/guide-screens/capture.js).
 const SUPPORT_EMAIL = "helpdesk@automatedbarcode.net";
+const GUIDE_LANG_KEY = "absl-guide-language";
 
 // Guide copy is static text with **bold** for on-screen labels. Escaped
 // first, then only the ** pairs become <strong>, so no other markup can
@@ -5704,398 +5708,180 @@ function guideText(text) {
   return escapeHtml(text).replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>");
 }
 
-const GUIDE_NAVIGATION = [
-  {
-    title: "Top bar",
-    body: "The dark bar at the very top: your connection status (**Connected** or **Offline**), **Help** (this guide) and **Sign Out**."
-  },
-  {
-    title: "Menu bar",
-    body: "Just below it. Customers see their own portal; technicians see theirs and **My Job Reports**. Operators see every section of the Operator interface — Dashboard, Reports, Approvals, Alerts, Notifications, Receipts and Client Errors — and the CEO also sees **Main Console**."
-  },
-  {
-    title: "Page header",
-    body: "Your portal's name and what it's for, with your role and name on the right — so you always know which account you're signed in to."
-  },
-  {
-    title: "Summary cards",
-    body: "The numbers at the top of your dashboard: open tickets, jobs waiting for a technician, unread alerts and so on. A quick look at what needs attention."
-  },
-  {
-    title: "Lists and search",
-    body: "Every ticket list has a search box plus status and priority filters. **See all** opens the complete list when there are more than fit on the dashboard."
-  },
-  {
-    title: "Ticket detail",
-    body: "Click any ticket and its full detail opens **below the lists** — scroll down. Status buttons, assigning, photos, replies and history are all in there."
+// Remembered choice first, then the browser's language, then English.
+function guideLanguage() {
+  const available = typeof GUIDE_CONTENT === "undefined" ? {} : GUIDE_CONTENT;
+  let saved = "";
+  try {
+    saved = localStorage.getItem(GUIDE_LANG_KEY) || "";
+  } catch (err) {
+    saved = "";
   }
-];
+  if (available[saved]) return saved;
+  const browser = String(navigator.language || "").slice(0, 2).toLowerCase();
+  return available[browser] ? browser : "en";
+}
 
-const ROLE_GUIDES = [
-  {
-    role: "customer",
-    title: "Customer Portal",
-    summary: "For customers reporting a problem and following it through to the fix.",
-    tasks: [
-      {
-        title: "Raise a ticket",
-        steps: [
-          "In **Create New Ticket**, choose the **Job Type**: Service, Fault, Installation or Other.",
-          "Add the **Department** that has the problem if it helps us find it (optional).",
-          "Write a short **Problem Summary**, tick any **Common Problems** that apply, and add any other details.",
-          "Set the **Priority** and the site **Location**. On a phone, **📍 Use my location** fills in your GPS position.",
-          "If someone else will meet the technician on site, add their **Site contact number**.",
-          "Tick **Need phone callback?** if you'd rather talk to someone, then press **Submit Ticket**."
-        ]
-      },
-      {
-        title: "Follow your tickets",
-        steps: [
-          "Every ticket you raise is listed in **My Tickets** with its current status.",
-          "Click a ticket to open its full detail below the lists: the facts, photos, technician, conversation and history.",
-          "Use the search box and filters to find an older ticket, or **See all** for the full list."
-        ]
-      },
-      {
-        title: "Talk to ABSL",
-        steps: [
-          "Reply in the **Conversation** box at the bottom of a ticket. We email you whenever ABSL replies.",
-          "Prefer a phone call? Use **Prefer a phone call?** on the right of the ticket and enter your number."
-        ]
-      },
-      {
-        title: "Change or close a ticket",
-        steps: [
-          "While a ticket is still **New**, open **Edit ticket details** to correct it.",
-          "When the job is done you'll get an email with the resolution notes and the service call number. Press **Closed** once you're happy."
-        ]
-      }
-    ]
-  },
-  {
-    role: "technician",
-    title: "Technician Field App",
-    summary: "For ABSL field technicians: your jobs, the open job pool, and logging your own work.",
-    tasks: [
-      {
-        title: "Take a job from Open Jobs",
-        steps: [
-          "**Open Jobs** appears at the top of your page whenever a job has been released to every technician.",
-          "Click the job, choose your own name under **Technician → Assign or hand over**, and press **Assign**. The first technician to accept it gets it."
-        ]
-      },
-      {
-        title: "Work your jobs",
-        steps: [
-          "**My Jobs** lists every job assigned to you. Click one to open it.",
-          "Press **In Progress** when you start. Tap the site contact number to call, or **Open map** to find the site.",
-          "Add photos as you go with **Add photo**, and keep the customer updated in the **Conversation**."
-        ]
-      },
-      {
-        title: "Resolve a job",
-        steps: [
-          "Press **Resolved**. You'll be asked for the **service call number**, your **resolution notes** and a **photo of the service call receipt** — all three are required.",
-          "The customer is emailed your notes and the service call number."
-        ]
-      },
-      {
-        title: "Hand a job to a colleague",
-        steps: [
-          "Open the job, choose the colleague under **Assign or hand over**, add a reason, and press **Reassign**. The hand-over note appears in the conversation."
-        ]
-      },
-      {
-        title: "Log a job",
-        steps: [
-          "Press **➕ Log a Job** for work that didn't come through the portal.",
-          "A customer phoned you: enter the company, the caller's name and phone, the job type, the fault location and the problem — the job is assigned to you.",
-          "A job you need to do yourself, with no caller: tick **This is my own job** — it's assigned to you straight away.",
-          "Can't take it right now? Answer **Yes** to opening it to every technician, and it goes to Open Jobs. Answer **No** and it's assigned to you."
-        ]
-      },
-      {
-        title: "Your job counts",
-        steps: [
-          "The cards at the top count your jobs: **New** (given to you, not opened yet), **Assigned** (opened, not started), **Ongoing** (In Progress) and **Resolved** (resolved or closed).",
-          "Tap a card to see exactly those jobs in My Job Reports."
-        ]
-      },
-      {
-        title: "My Job Reports",
-        steps: [
-          "Open **My Job Reports** from the menu bar or the button next to My Jobs. It lists every job assigned to you — only yours.",
-          "Filter by **Job Status**, **Job Type**, **From/To Date**, **Service Call No** or **Customer Name** (any together), then press **Generate Report**. **Reset Filters** starts again.",
-          "In the table, sort any column by its heading, filter each column from the row under the headings, or search the whole report.",
-          "**Download Excel** saves a formatted .xlsx and **Print Report** prints just the report — both contain exactly the rows you're looking at."
-        ]
-      }
-    ]
-  },
-  {
-    role: "operator",
-    title: "Operator",
-    summary:
-      "For ABSL operators and the CEO: the ticket queue, dispatching, callbacks, reports, sign-ups and keeping the platform healthy — all in one place.",
-    tasks: [
-      {
-        title: "Work the Ticket Queue",
-        steps: [
-          "The **Ticket Queue** lists every ticket, fully searchable. **Waiting for a technician** in the summary cards counts open jobs nobody has yet.",
-          "Click a ticket to open it below the queue."
-        ]
-      },
-      {
-        title: "Assign or dispatch",
-        steps: [
-          "To give a job to one person: under **Technician**, choose them and press **Assign**. They're emailed straight away.",
-          "To let the first available technician take it: press **Release to all technicians** under **Dispatch**. Every technician sees it in Open Jobs."
-        ]
-      },
-      {
-        title: "Keep the customer informed",
-        steps: [
-          "Reply in the **Conversation** — the customer is emailed. Move the ticket along with the **Status** buttons; **Resolved** asks for the service call number, notes and receipt photo."
-        ]
-      },
-      {
-        title: "Callbacks and phone-ins",
-        steps: [
-          "The **Callback Queue** lists customers waiting for a call. Press **Call** (on a phone), then **Done** once you've spoken.",
-          "Use **➕ Log a Job** for a customer who phoned instead of using the portal. Answer **Yes** to opening it to every technician to release it straight away (**No** keeps it to assign later), or **This is a job nobody called in for** when there's no caller."
-        ]
-      },
-      {
-        title: "Reports",
-        steps: [
-          "Open **Reports**, choose a **Report Type** — Technician Wise, Customer Wise, Date Wise, All Faults, Service Call Number or All Jobs — set its filters and press **Generate Report**.",
-          "In the preview, sort any column by clicking its heading, filter each column from the row under the headings, or search the whole report.",
-          "**Download Excel** saves a formatted .xlsx, **Print Report** prints just the report, and **Open Report** shows it full screen. All three contain exactly the rows you're looking at."
-        ]
-      },
-      {
-        title: "Approve new accounts",
-        steps: [
-          "**User Approvals** lists new registrations waiting for review.",
-          "Choose the role to grant — it starts on what they asked for — then press **Approve**, or **Reject**. They're emailed the decision.",
-          "Operators can approve as Customer or Technician. Operator and CEO access is given by the CEO in the Main Console."
-        ]
-      },
-      {
-        title: "Company account limits",
-        steps: [
-          "When a company runs out of accounts, choose it under **Company Limit**, enter a new limit and press **Update Limit**."
-        ]
-      },
-      {
-        title: "Keep the platform healthy",
-        steps: [
-          "**System Alerts** shows problems such as emails that could not be sent — press **Acknowledge** once each one is handled.",
-          "**Notifications** is the email queue — **Retry** anything that failed.",
-          "**Resolution Receipts** and **Client Errors** are records for checking jobs and diagnosing problems.",
-          "Each of these has its own page in the menu bar at the top."
-        ]
-      }
-    ]
-  },
-  {
-    role: "main-console",
-    title: "Main Console (CEO only)",
-    summary: "For the CEO: deciding who has which role. Everything else the CEO does is in the Operator interface.",
-    tasks: [
-      {
-        title: "Promote someone or change a role",
-        steps: [
-          "Open **Main Console** from the menu bar.",
-          "Under **Manage Staff**, pick a new role for any account and press **Update Role** — make someone an Operator, a Technician or another CEO.",
-          "Your own role can only be changed from a second CEO account."
-        ]
-      },
-      {
-        title: "See a portal as its users do",
-        steps: [
-          "**Preview a portal** opens the Customer Portal or the Technician Field App. A yellow banner links you back to the Operator dashboard."
-        ]
-      }
-    ]
+function setGuideLanguage(code) {
+  try {
+    localStorage.setItem(GUIDE_LANG_KEY, code);
+  } catch (err) {
+    // Private browsing: the choice just isn't remembered.
   }
-];
-
-const GUIDE_STATUSES = [
-  { status: "new", body: "Just raised. Nobody has started on it yet." },
-  { status: "in_progress", body: "A technician is working on it." },
-  { status: "resolved", body: "The work is done. The technician has recorded the service call number and what was done." },
-  { status: "closed", body: "Finished and filed away." }
-];
-
-const GUIDE_EMAILS = [
-  "**Everyone:** a verification link when you register, a message when your account is approved (or not), and password reset links when you ask for one.",
-  "**Customers:** ticket created, every status change, replies from ABSL, and the resolution with notes and the service call number.",
-  "**Technicians:** when a job is assigned to you, and when a customer replies on one of your jobs.",
-  "**Operators and the CEO:** when a customer replies on a ticket that has no technician yet."
-];
-
-const GUIDE_FAQ = [
-  {
-    q: "I didn't get the verification email.",
-    a: "Wait a few minutes and check your spam or junk folder. Still nothing? Email us at the address below with the address you registered."
-  },
-  {
-    q: "It says “Waiting for approval”.",
-    a: "Your account needs ABSL to approve it. You'll get an email as soon as they do — then just sign in again."
-  },
-  {
-    q: "I forgot my password.",
-    a: "Press **Forgot password?** on the login page. The link we email you works once and expires after a short time."
-  },
-  {
-    q: "It says “You do not have permission to do that”.",
-    a: "That action isn't available to your role, or the ticket changed since you opened it (for example, another technician accepted the job). Reload the page and try again."
-  },
-  {
-    q: "It says someone else updated this ticket.",
-    a: "Two people changed it at the same moment. Reload to see their change, then make yours."
-  },
-  {
-    q: "I can't find a ticket.",
-    a: "Clear the search box and set the filters back to **All statuses** and **Any priority**, or press **See all** for the full list."
-  },
-  {
-    q: "The badge at the top says Offline.",
-    a: "You've lost your internet connection. Nothing you change is saved until it comes back."
-  },
-  {
-    q: "Can I put the helpdesk on my phone's home screen?",
-    a: "Yes. On Android (Chrome), open the **⋮** menu and choose **Add to Home screen** or **Install app**. On iPhone (Safari), tap **Share**, then **Add to Home Screen**."
-  }
-];
+  render();
+}
 
 function guideSteps(steps) {
   return `<ol class="guide-steps">${steps.map((step) => `<li>${guideText(step)}</li>`).join("")}</ol>`;
 }
 
+function guideFigures(names, caption) {
+  const figures = (names || [])
+    .map((name) => GUIDE_IMAGES[name])
+    .filter(Boolean)
+    .map(
+      (image) => `
+        <figure class="guide-shot ${image.phone ? "is-phone" : ""}">
+          <a href="${escapeHtml(image.src)}" target="_blank" rel="noopener">
+            <img src="${escapeHtml(image.src)}" alt="${escapeHtml(caption)}" loading="lazy" decoding="async" />
+          </a>
+        </figure>`
+    )
+    .join("");
+  return figures ? `<div class="guide-shots">${figures}</div>` : "";
+}
+
 function helpPage() {
+  if (typeof GUIDE_CONTENT === "undefined") {
+    return `<section class="panel"><p class="muted">The guide could not load. Please refresh the page.</p></section>`;
+  }
+
+  const lang = guideLanguage();
+  const g = GUIDE_CONTENT[lang];
+  const ui = g.ui;
   const signedIn = Boolean(currentUser);
   const myRole = signedIn ? dashboardRouteForRole() : "customer";
   const guideIsMine = (guide) =>
     signedIn && (guide.role === myRole || (guide.role === "main-console" && userRole() === "admin"));
-  const sections = [
-    ["guide-start", "Getting started"],
-    ["guide-navigation", "Finding your way"],
-    ["guide-roles", "Guide for your role"],
-    ["guide-tickets", "How a ticket moves"],
-    ["guide-emails", "Emails you'll get"],
-    ["guide-faq", "Common questions"]
-  ];
+  const sections = ["start", "navigation", "roles", "tickets", "emails", "faq"];
 
   return `
-    <div class="guide">
-      <nav class="guide-toc" aria-label="On this page">
+    <div class="guide" lang="${escapeHtml(lang)}">
+      <div class="guide-languages" role="group" aria-label="${escapeHtml(ui.language)}">
+        ${GUIDE_LANGUAGES.map(
+          (option) => `
+            <button class="guide-lang ${option.code === lang ? "is-active" : ""}" type="button"
+                    lang="${escapeHtml(option.code)}" data-guide-lang="${escapeHtml(option.code)}"
+                    aria-pressed="${option.code === lang}">${escapeHtml(option.name)}</button>`
+        ).join("")}
+      </div>
+
+      <nav class="guide-toc" aria-label="${escapeHtml(ui.title)}">
         ${sections
-          .map(([id, label]) => `<button class="guide-chip" type="button" data-guide-jump="${id}">${label}</button>`)
+          .map((id) => `<button class="guide-chip" type="button" data-guide-jump="guide-${id}">${escapeHtml(ui.toc[id])}</button>`)
           .join("")}
-        ${
-          signedIn
-            ? `<button class="guide-chip guide-chip-accent" type="button" id="replayTourBtn">▶ Replay the welcome tour</button>`
-            : ""
-        }
+        ${signedIn ? `<button class="guide-chip guide-chip-accent" type="button" id="replayTourBtn">${escapeHtml(ui.replayTour)}</button>` : ""}
       </nav>
+      <p class="small muted guide-hint">${escapeHtml(ui.enlarge)}</p>
 
       <section class="panel guide-section" id="guide-start">
-        <h2>Getting started</h2>
-        <p class="muted">ABSL Helpdesk is where Automated Barcode Solutions customers report problems with their barcode, printing and scanning equipment, and where ABSL staff take every job from first report to fix.</p>
-        ${guideSteps([
-          "**Create your account.** On **Register**, choose **Customer** (or **Technician / Field Staff** if you work for ABSL), then enter your full name, company, email, phone number and a password. Press **Show** to check what you typed.",
-          "**Verify your email.** Open the email we send and click the link — you can't sign in until you do.",
-          "**Wait for approval, if needed.** Accounts on an email domain ABSL has verified are approved straight away. Personal email addresses and all field-staff requests are checked by an ABSL admin first, and you're emailed when that's done.",
-          "**Sign in.** Use **Login** with your email and password. You land on your own dashboard automatically.",
-          "**First time in?** A short welcome tour shows you around. You can replay it any time from this page."
-        ])}
-        <p class="small muted">Operator and CEO accounts can't be requested when registering. Register as normal and the CEO will set your role.</p>
+        <h2>${escapeHtml(ui.toc.start)}</h2>
+        <p class="muted">${guideText(g.start.intro)}</p>
+        ${guideSteps(g.start.steps)}
+        ${guideFigures(g.start.images, ui.toc.start)}
+        <p class="small muted">${guideText(ui.startNote)}</p>
       </section>
 
       <section class="panel guide-section" id="guide-navigation">
-        <h2>Finding your way after you sign in</h2>
+        <h2>${escapeHtml(ui.toc.navigation)}</h2>
+        ${guideFigures([g.navigation.image], ui.toc.navigation)}
         <div class="guide-grid">
-          ${GUIDE_NAVIGATION.map(
-            (item) => `
+          ${g.navigation.items
+            .map(
+              (item) => `
               <article class="guide-card">
                 <h3>${escapeHtml(item.title)}</h3>
                 <p>${guideText(item.body)}</p>
               </article>`
-          ).join("")}
+            )
+            .join("")}
         </div>
-        <p class="small muted">Each portal has its own accent colour, so you can tell at a glance which one you're looking at.</p>
+        <p class="small muted">${guideText(ui.navNote)}</p>
       </section>
 
       <section class="panel guide-section" id="guide-roles">
-        <h2>Guide for your role</h2>
-        <p class="muted">${
-          signedIn
-            ? "Your own role is opened for you. Tap any other to read it."
-            : "Tap your role to read how to use it."
-        }</p>
-        ${ROLE_GUIDES.map(
-          (guide) => `
+        <h2>${escapeHtml(ui.toc.roles)}</h2>
+        <p class="muted">${escapeHtml(signedIn ? ui.rolesSignedIn : ui.rolesSignedOut)}</p>
+        ${g.roles
+          .map(
+            (guide) => `
             <details class="guide-role" ${guideIsMine(guide) ? "open" : ""}>
               <summary>
                 <span>${escapeHtml(guide.title)}</span>
-                ${guideIsMine(guide) ? `<span class="badge badge-ok">Your role</span>` : ""}
+                ${guideIsMine(guide) ? `<span class="badge badge-ok">${escapeHtml(ui.yourRole)}</span>` : ""}
               </summary>
-              <p class="muted">${escapeHtml(guide.summary)}</p>
+              <p class="muted">${guideText(guide.summary)}</p>
               ${guide.tasks
                 .map(
-                  (task) => `
-                    <h3>${escapeHtml(task.title)}</h3>
-                    ${guideSteps(task.steps)}`
+                  (task, index) => `
+                    <div class="guide-task">
+                      <h3><span class="guide-task-number">${index + 1}</span>${escapeHtml(task.title)}</h3>
+                      ${guideSteps(task.steps)}
+                      ${guideFigures(task.images, task.title)}
+                    </div>`
                 )
                 .join("")}
             </details>`
-        ).join("")}
+          )
+          .join("")}
       </section>
 
       <section class="panel guide-section" id="guide-tickets">
-        <h2>How a ticket moves</h2>
+        <h2>${escapeHtml(ui.toc.tickets)}</h2>
         <div class="guide-statuses">
-          ${GUIDE_STATUSES.map(
-            (item) => `
+          ${["new", "in_progress", "resolved", "closed"]
+            .map(
+              (status) => `
               <div class="guide-status">
-                ${statusBadge(item.status)}
-                <p>${escapeHtml(item.body)}</p>
+                ${statusBadge(status)}
+                <p>${escapeHtml(g.tickets.statuses[status])}</p>
               </div>`
-          ).join("")}
+            )
+            .join("")}
         </div>
-        <p>${guideText("**Priority** (High, Medium, Low) says how urgent a job is. **Job type** (Service, Fault, Installation, Other) says what kind of work it is.")}</p>
-        <p>${guideText("**In reports**, a New job that already has a technician shows as **Assigned**, and In Progress shows as **Ongoing**.")}</p>
-        <p>${guideText("**Who can move a ticket:** technicians can mark their jobs In Progress or Resolved; operators and the CEO can set any status; customers can close their own tickets.")}</p>
+        ${g.tickets.notes.map((note) => `<p>${guideText(note)}</p>`).join("")}
       </section>
 
       <section class="panel guide-section" id="guide-emails">
-        <h2>Emails you'll get</h2>
-        <ul class="guide-list">${GUIDE_EMAILS.map((line) => `<li>${guideText(line)}</li>`).join("")}</ul>
-        <p class="small muted">Emails come from ABSL Helpdesk. If you don't see one, check your spam or junk folder.</p>
+        <h2>${escapeHtml(ui.toc.emails)}</h2>
+        <ul class="guide-list">${g.emails.map((line) => `<li>${guideText(line)}</li>`).join("")}</ul>
+        <p class="small muted">${escapeHtml(ui.emailsNote)}</p>
       </section>
 
       <section class="panel guide-section" id="guide-faq">
-        <h2>Common questions</h2>
-        ${GUIDE_FAQ.map(
-          (item) => `
+        <h2>${escapeHtml(ui.toc.faq)}</h2>
+        ${g.faq
+          .map(
+            (item) => `
             <details class="guide-role">
               <summary><span>${escapeHtml(item.q)}</span></summary>
               <p>${guideText(item.a)}</p>
             </details>`
-        ).join("")}
+          )
+          .join("")}
         <div class="notice guide-contact">
-          Still stuck? Email <a href="mailto:${escapeHtml(SUPPORT_EMAIL)}">${escapeHtml(SUPPORT_EMAIL)}</a> — include your ticket number if it's about a job.
+          ${escapeHtml(ui.contact)
+            .split("{email}")
+            .join(`<a href="mailto:${escapeHtml(SUPPORT_EMAIL)}">${escapeHtml(SUPPORT_EMAIL)}</a>`)}
         </div>
       </section>
 
       <div class="action-row guide-footer">
         ${
           signedIn
-            ? `<a class="primary-button" href="${escapeHtml(dashboardRouteForRole())}.html">Go to my dashboard</a>`
-            : `<a class="primary-button" href="register.html">Create an account</a>
-               <a class="secondary-button" href="login.html">Login</a>`
+            ? `<a class="primary-button" href="${escapeHtml(dashboardRouteForRole())}.html">${escapeHtml(ui.goDashboard)}</a>`
+            : `<a class="primary-button" href="register.html">${escapeHtml(ui.createAccount)}</a>
+               <a class="secondary-button" href="login.html">${escapeHtml(ui.login)}</a>`
         }
       </div>
     </div>
@@ -6871,7 +6657,9 @@ function render() {
       ? portals[dashboardRouteForRole()]?.accent || "customer"
       : "customer";
     app.innerHTML =
-      pageHeading("User Guide", "Everything you need for your first day: getting in, finding your way around, and getting a job done.") +
+      (typeof GUIDE_CONTENT === "undefined"
+        ? pageHeading("User Guide", "")
+        : pageHeading(GUIDE_CONTENT[guideLanguage()].ui.title, GUIDE_CONTENT[guideLanguage()].ui.intro)) +
       helpPage();
     bindEvents();
     return;
@@ -7236,6 +7024,10 @@ function bindEvents() {
     button.onclick = () => {
       document.getElementById(button.dataset.guideJump)?.scrollIntoView({ behavior: "smooth", block: "start" });
     };
+  });
+
+  document.querySelectorAll("[data-guide-lang]").forEach((button) => {
+    button.onclick = () => setGuideLanguage(button.dataset.guideLang);
   });
 
   const replayTourBtn = document.querySelector("#replayTourBtn");
