@@ -443,6 +443,17 @@ END
 $absl_check$;
 
 
+-- Live updates: the tables app.js subscribes to (subscribeToTicketUpdates)
+-- must be in the supabase_realtime publication, or pages never refresh.
+INSERT INTO absl_finding (area, item, finding, source)
+SELECT 'realtime', 'public.' || t, 'not sending live updates - run 0035', ''
+FROM unnest(ARRAY['tickets', 'ticket_comments', 'admin_alerts']) AS t
+WHERE NOT EXISTS (
+  SELECT 1 FROM pg_publication_tables p
+  WHERE p.pubname = 'supabase_realtime' AND p.schemaname = 'public' AND p.tablename = t
+);
+
+
 -- 5. Jobs with no technician - information for agents, not a problem ----
 INSERT INTO absl_finding (area, item, finding, source, optional)
 SELECT 'job', t.ticket_number || ' (' || coalesce(comp.name, 'no company') || ')',
