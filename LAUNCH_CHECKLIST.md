@@ -112,6 +112,32 @@ daily cap. Full case in AUDIT_REPORT.md §6.2.
 **Combined: ~$45/month.** One figure to bring to the CEO, not two surprises
 found later.
 
+### Staying on the free plans for now
+
+Until the upgrade is approved, migration 0037 and the app keep the Free plan
+workable:
+
+- **Photos are shrunk in the browser** before upload (1600 px, JPEG): a
+  2–5 MB phone photo goes up as roughly 200–400 KB, so 1 GB holds thousands
+  of receipts instead of a few hundred.
+- **Files of deleted tickets are removed** by the email worker once an hour
+  (`leftover_ticket_files()`); receipt photos are kept because receipts
+  outlive their ticket.
+- **Main Console → Free plan space and backups** shows photo and database
+  space against the limits, and **Download backup** saves every table as one
+  JSON file. Download one every week and keep it in Google Drive or on a USB
+  drive — this is the only backup on the Free plan.
+- **System Alerts** (also emailed to the CEO) when photos or the database
+  pass 80%, and a weekly reminder when no backup has been taken.
+- **Cron → Enable cleanup**: the email job runs every minute, so turn on
+  Supabase's cleanup of old cron run history or it slowly fills the
+  database.
+- The every-minute email job also keeps the project active, so it should
+  not auto-pause; if Supabase ever emails a pause warning, open the
+  dashboard and choose Restore.
+- Vercel Hobby still only allows non-commercial use; that one needs the Pro
+  plan or a host whose free tier allows business use.
+
 ---
 
 ## 4. Auth and storage settings (10 min)

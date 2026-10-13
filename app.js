@@ -69,6 +69,7 @@ const portals = {
       "companies",
       "approvals",
       "staffAccounts",
+      "planUsage",
       "notifications",
       "alerts",
       "receipts",
@@ -105,6 +106,7 @@ const initialState = {
   approvals: [],
   notifications: [],
   staffAccounts: [],
+  planUsage: null,
   companies: [],
   selectedCompanyId: "",
   staffNames: {},
@@ -454,20 +456,24 @@ function openResolveTicketModal(ticketId) {
       return;
     }
 
-    const checks = [validateUpload(receiptPhoto, "service_receipt"), ...additionalPhotos.map((file) => validateUpload(file, "photo"))];
+    const submitBtn = card.querySelector("#resolveTicketForm button[type=submit]");
+    if (submitBtn) submitBtn.disabled = true;
+
+    const receiptFile = await shrinkPhoto(receiptPhoto);
+    const photoFiles = await Promise.all(additionalPhotos.map(shrinkPhoto));
+
+    const checks = [validateUpload(receiptFile, "service_receipt"), ...photoFiles.map((file) => validateUpload(file, "photo"))];
     const failed = checks.find((check) => !check.ok);
     if (failed) {
+      if (submitBtn) submitBtn.disabled = false;
       showToast(failed.message, "warning");
       return;
     }
 
-    const submitBtn = card.querySelector("#resolveTicketForm button[type=submit]");
-    if (submitBtn) submitBtn.disabled = true;
-
     // The receipt has to exist in the database before the status RPC will
     // accept the resolution - change_ticket_status() checks for the row,
     // not just that this form was filled in.
-    const receiptUpload = await uploadAttachment(ticketId, receiptPhoto, "ticket-service-receipts", "service_receipt");
+    const receiptUpload = await uploadAttachment(ticketId, receiptFile, "ticket-service-receipts", "service_receipt");
     if (!receiptUpload) {
       if (submitBtn) submitBtn.disabled = false;
       return; // uploadAttachment() already toasted the specific error
@@ -476,9 +482,9 @@ function openResolveTicketModal(ticketId) {
     // Best-effort: these are useful, not required, so a failure here must
     // not block a resolution whose one required piece of evidence (the
     // receipt) is already safely on file.
-    if (additionalPhotos.length) {
+    if (photoFiles.length) {
       await Promise.all(
-        additionalPhotos.map((file) => uploadAttachment(ticketId, file, "ticket-photos", "photo"))
+        photoFiles.map((file) => uploadAttachment(ticketId, file, "ticket-photos", "photo"))
       );
     }
 
@@ -2162,6 +2168,50 @@ async function createRealTicket(ticket) {
   return data;
 }
 
+// The Free plan holds 1 GB of files in all (see 0037). A phone photo is
+// 2-5 MB; resized to 1600 px on its longest side it is a few hundred KB
+// and a receipt is still easy to read. Anything the browser can't decode
+// (HEIC outside Safari, say), or that wouldn't get smaller, goes up as it
+// was - the size check after this still applies.
+const PHOTO_MAX_SIDE = 1600;
+const PHOTO_QUALITY = 0.8;
+const PHOTO_SHRINK_FROM_BYTES = 400 * 1024;
+
+async function shrinkPhoto(file) {
+  if (!file || !file.size || file.size <= PHOTO_SHRINK_FROM_BYTES) return file;
+  if (!UPLOAD_LIMITS.photo.types.includes(baseMimeType(file.type))) return file;
+
+  const url = URL.createObjectURL(file);
+  try {
+    const image = await new Promise((resolve, reject) => {
+      const img = new Image();
+      img.onload = () => resolve(img);
+      img.onerror = reject;
+      img.src = url;
+    });
+
+    const scale = Math.min(1, PHOTO_MAX_SIDE / Math.max(image.naturalWidth, image.naturalHeight));
+    const canvas = document.createElement("canvas");
+    canvas.width = Math.max(1, Math.round(image.naturalWidth * scale));
+    canvas.height = Math.max(1, Math.round(image.naturalHeight * scale));
+    const context = canvas.getContext("2d");
+    context.fillStyle = "#ffffff"; // a transparent PNG becomes white, not black
+    context.fillRect(0, 0, canvas.width, canvas.height);
+    context.drawImage(image, 0, 0, canvas.width, canvas.height);
+
+    const blob = await new Promise((resolve) => canvas.toBlob(resolve, "image/jpeg", PHOTO_QUALITY));
+    if (!blob || blob.size >= file.size) return file;
+
+    const name = `${String(file.name || "photo").replace(/\.[^.]*$/, "")}.jpg`;
+    return new File([blob], name, { type: "image/jpeg", lastModified: Date.now() });
+  } catch (err) {
+    console.warn("Could not shrink photo, uploading it as it is", err);
+    return file;
+  } finally {
+    URL.revokeObjectURL(url);
+  }
+}
+
 async function uploadAttachment(ticketId, file, bucketName, fileType) {
   if (!file || file.size === 0) return null;
 
@@ -2476,21 +2526,23 @@ async function addProgressPhoto(event, ticketId) {
   }
 
   const form = new FormData(event.target);
-  const file = form.get("photo");
+  const chosen = form.get("photo");
 
-  if (!file || !file.size) {
+  if (!chosen || !chosen.size) {
     showToast("Choose a photo to add.", "warning");
-    return;
-  }
-
-  const check = validateUpload(file, "photo");
-  if (!check.ok) {
-    showToast(check.message, "warning");
     return;
   }
 
   const submitBtn = event.target.querySelector("button[type=submit]");
   if (submitBtn) submitBtn.disabled = true;
+
+  const file = await shrinkPhoto(chosen);
+  const check = validateUpload(file, "photo");
+  if (!check.ok) {
+    if (submitBtn) submitBtn.disabled = false;
+    showToast(check.message, "warning");
+    return;
+  }
 
   try {
     const originalName = file.name || `photo-${Date.now()}`;
@@ -2885,6 +2937,59 @@ async function loadStaffAccounts() {
   state.staffAccounts = data || [];
 }
 
+// Space used against the Free plan, and the last backup (0037). CEO only.
+async function loadPlanUsage() {
+  if (!supabaseClient || userRole() !== "admin") return;
+
+  const { data, error } = await supabaseClient.rpc("free_plan_usage");
+  if (error) {
+    console.error(error);
+    state.planUsage = { error: error.message };
+    return;
+  }
+
+  state.planUsage = data;
+}
+
+// The Free plan has no automatic backups, so the CEO downloads one: every
+// table as a single JSON file (admin_backup(), 0037).
+async function downloadBackup(button) {
+  if (!supabaseClient || userRole() !== "admin") return;
+
+  const label = button.textContent;
+  button.disabled = true;
+  button.textContent = "Preparing backup…";
+
+  try {
+    const { data, error } = await supabaseClient.rpc("admin_backup");
+    if (error) {
+      showToast(friendlyError(error.message), "error");
+      return;
+    }
+
+    const blob = new Blob([JSON.stringify(data)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `absl-helpdesk-backup-${new Date().toLocaleDateString("en-CA")}.json`;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 10000);
+
+    const records = Object.values(data.row_counts || {}).reduce((sum, count) => sum + Number(count || 0), 0);
+    showToast(`Backup downloaded: ${records} records (${formatBytes(blob.size)}). Keep it somewhere safe.`, "success");
+
+    await loadPlanUsage();
+    render();
+  } catch (err) {
+    showToast(friendlyError(err), "error");
+  } finally {
+    button.disabled = false;
+    button.textContent = label;
+  }
+}
+
 // The admin console used to hold a hard-coded company id ("ABSL-COMPANY"),
 // so "Update Limit" never wrote anything. Load the real rows instead.
 // RLS does the scoping: a customer gets only their own company row, an
@@ -3178,6 +3283,7 @@ async function loadRealSupportData(options = {}) {
     callbacks: loadCallbackQueue,
     approvals: loadRealApprovals,
     staffAccounts: loadStaffAccounts,
+    planUsage: loadPlanUsage,
     notifications: loadRealNotifications,
     alerts: loadRealAdminAlerts,
     receipts: loadRealReceipts,
@@ -6596,6 +6702,66 @@ function adminListPage(route) {
 // The CEO's own page. Everything else the CEO Console had is on the Operator
 // dashboard, which the CEO uses like every operator; this keeps what only
 // the CEO may do - changing who has which role.
+function usageMeterHtml(label, used, limit) {
+  const percent = limit > 0 ? Math.min(100, Math.round((100 * used) / limit)) : 0;
+  const level = percent >= 95 ? "is-critical" : percent >= 80 ? "is-warning" : "";
+  const GB = 1024 * 1024 * 1024;
+  const size = (bytes) => (bytes >= GB ? `${Number((bytes / GB).toFixed(2))} GB` : formatBytes(bytes));
+  return `
+    <div class="usage-row">
+      <div class="usage-label"><strong>${escapeHtml(label)}</strong><span>${size(used)} of ${size(limit)} · ${percent}%</span></div>
+      <div class="usage-meter ${level}" role="meter" aria-label="${escapeHtml(label)}" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${percent}">
+        <span style="width: ${percent}%"></span>
+      </div>
+    </div>`;
+}
+
+function planUsagePanel() {
+  const usage = state.planUsage;
+  let body;
+
+  if (!usage) {
+    body = `<p class="muted small">Loading…</p>`;
+  } else if (usage.error) {
+    body = `<p class="muted small">Could not read plan usage: ${escapeHtml(usage.error)}</p>`;
+  } else {
+    const lastBackup = usage.last_backup_at ? new Date(usage.last_backup_at) : null;
+    const backupDays = lastBackup ? Math.floor((Date.now() - lastBackup.getTime()) / 86400000) : null;
+    const backupDue = backupDays === null || backupDays >= 7;
+    const leftover = usage.leftover || { files: 0, bytes: 0 };
+    body = `
+      ${usageMeterHtml("Photos and files", Number(usage.storage_bytes), Number(usage.storage_limit))}
+      ${usageMeterHtml("Database", Number(usage.database_bytes), Number(usage.database_limit))}
+      ${
+        Number(leftover.files) > 0
+          ? `<p class="muted small">${Number(leftover.files)} file(s) (${formatBytes(leftover.bytes)}) from deleted tickets are removed automatically within the hour.</p>`
+          : ""
+      }
+      <div class="backup-row ${backupDue ? "is-due" : ""}">
+        <div>
+          <strong>Last backup:</strong>
+          ${
+            lastBackup
+              ? `${escapeHtml(formatDateTime(lastBackup))}${usage.last_backup_by ? ` by ${escapeHtml(usage.last_backup_by)}` : ""} (${backupDays === 0 ? "today" : `${backupDays} day(s) ago`})`
+              : "never"
+          }
+          ${backupDue ? `<span class="badge badge-progress">Backup due</span>` : ""}
+        </div>
+        <button class="primary-button" type="button" data-download-backup>Download backup</button>
+      </div>
+      <p class="muted small">The Free plan has no automatic backups. Download one every week and keep it in Google Drive or on a USB drive. It holds every ticket, customer, receipt and report record; photos stay in Supabase and the file lists them.</p>`;
+  }
+
+  return `
+    <article class="panel panel-span-full">
+      <div class="panel-title">
+        <h2>Free plan space and backups</h2>
+        <span class="badge badge-muted">Supabase Free</span>
+      </div>
+      ${body}
+    </article>`;
+}
+
 function mainConsolePage() {
   return `
     <section class="dashboard-grid">
@@ -6611,6 +6777,8 @@ function mainConsolePage() {
             : `<div class="empty-state">No accounts yet.</div>`
         }
       </article>
+
+      ${planUsagePanel()}
 
       <article class="panel">
         <h2>Preview a portal</h2>
@@ -6980,6 +7148,10 @@ function bindEvents() {
 
   document.querySelectorAll("[data-delete-ticket]").forEach((button) => {
     button.onclick = () => deleteTicket(button.dataset.deleteTicket);
+  });
+
+  document.querySelectorAll("[data-download-backup]").forEach((button) => {
+    button.onclick = () => downloadBackup(button);
   });
 
   document.querySelectorAll("[data-delete-comment]").forEach((button) => {

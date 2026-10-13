@@ -345,6 +345,74 @@ async function sendEmail(to: string, subject: string, text: string) {
   }
 }
 
+// --- Free plan housekeeping (0037) ------------------------------------
+// Runs once an hour from the regular cron call. Never lets a failure here
+// stop the emails, which have already gone out by the time this runs.
+const STORAGE_CLEANUP_BATCH = 100;
+
+async function housekeeping() {
+  const summary = { leftoverFilesRemoved: 0, alertsRaised: [] as string[], adminsEmailed: 0 };
+
+  // Files left in storage by tickets that were deleted (0037).
+  try {
+    const { data: leftovers, error } = await admin.rpc("leftover_ticket_files", { p_limit: STORAGE_CLEANUP_BATCH });
+    if (error) throw error;
+    const byBucket = new Map<string, string[]>();
+    for (const file of (leftovers as Array<{ bucket_id: string; name: string }>) ?? []) {
+      byBucket.set(file.bucket_id, [...(byBucket.get(file.bucket_id) ?? []), file.name]);
+    }
+    for (const [bucket, names] of byBucket) {
+      const { data: removed, error: removeError } = await admin.storage.from(bucket).remove(names);
+      if (removeError) {
+        console.error("leftover file cleanup failed", bucket, removeError);
+        continue;
+      }
+      summary.leftoverFilesRemoved += removed?.length ?? 0;
+    }
+  } catch (e) {
+    console.error("leftover file lookup failed", e);
+  }
+
+  // Storage, database and weekly-backup alerts. New ones are emailed to
+  // the CEO as well, since they need acting on before anything breaks.
+  try {
+    const { data: check, error } = await admin.rpc("check_free_plan_limits");
+    if (error) throw error;
+    const raised = ((check as { raised?: string[] })?.raised ?? []);
+    summary.alertsRaised = raised;
+
+    if (raised.length > 0) {
+      const { data: newAlerts } = await admin
+        .from("admin_alerts")
+        .select("title, body")
+        .in("alert_type", raised)
+        .eq("acknowledged", false);
+      const { data: ceos } = await admin
+        .from("profiles")
+        .select("email")
+        .eq("role", "admin")
+        .eq("approval_status", "approved");
+
+      const text = ((newAlerts as Array<{ title: string; body: string }>) ?? [])
+        .map((a) => `${a.title}\n${a.body}`)
+        .join("\n\n");
+      for (const ceo of (ceos as Array<{ email: string | null }>) ?? []) {
+        if (!ceo.email || !text) continue;
+        try {
+          await sendEmail(ceo.email, "ABSL Helpdesk: action needed", text);
+          summary.adminsEmailed++;
+        } catch (e) {
+          console.error("Failed to email plan alert to", ceo.email, e);
+        }
+      }
+    }
+  } catch (e) {
+    console.error("plan limit check failed", e);
+  }
+
+  return summary;
+}
+
 Deno.serve(async (request) => {
   if (workerSecret && request.headers.get("x-worker-secret") !== workerSecret) {
     return Response.json({ ok: false, error: "Forbidden" }, { status: 403 });
@@ -486,7 +554,20 @@ Deno.serve(async (request) => {
       }
     }
 
-    return Response.json({ ok: true, processed: results.length, results, adminDigest, sender: useSmtp ? "smtp" : "resend" });
+    // Once an hour (the cron calls every minute or every five), or on
+    // demand with ?housekeeping=1 when testing by hand.
+    const runHousekeeping =
+      new Date().getUTCMinutes() === 0 || new URL(request.url).searchParams.get("housekeeping") === "1";
+    const housekeepingResult = runHousekeeping ? await housekeeping() : null;
+
+    return Response.json({
+      ok: true,
+      processed: results.length,
+      results,
+      adminDigest,
+      housekeeping: housekeepingResult,
+      sender: useSmtp ? "smtp" : "resend"
+    });
   } catch (err) {
     console.error("send-notifications crashed", err);
     return Response.json({ ok: false, error: String(err) }, { status: 500 });
