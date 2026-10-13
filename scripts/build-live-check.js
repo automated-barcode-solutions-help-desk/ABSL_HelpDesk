@@ -319,6 +319,9 @@ JOIN pg_namespace n ON n.oid = p.pronamespace
 WHERE n.nspname = 'public'
   AND p.prokind = 'f'
   AND NOT EXISTS (SELECT 1 FROM pg_depend d WHERE d.classid = 'pg_proc'::regclass AND d.objid = p.oid AND d.deptype = 'e')
+  -- Supabase's own database-wide hooks (e.g. rls_auto_enable, which turns
+  -- row security on for every new table) run from event triggers.
+  AND NOT EXISTS (SELECT 1 FROM pg_event_trigger et WHERE et.evtfoid = p.oid)
   AND NOT EXISTS (SELECT 1 FROM absl_expected_function e WHERE to_regprocedure(e.signature) = p.oid);
 
 
@@ -332,7 +335,7 @@ JOIN pg_namespace n ON n.oid = p.pronamespace
 WHERE n.nspname = 'public'
   AND p.prokind = 'f'
   AND p.prosecdef
-  AND p.prorettype <> 'trigger'::regtype
+  AND p.prorettype NOT IN ('trigger'::regtype, 'event_trigger'::regtype)
   AND has_function_privilege('anon', p.oid, 'EXECUTE')
   AND p.proname NOT IN ('current_role', 'is_staff', 'is_admin', 'is_office', 'can_view_ticket', 'can_access_ticket_file')
   AND NOT EXISTS (SELECT 1 FROM pg_depend d WHERE d.classid = 'pg_proc'::regclass AND d.objid = p.oid AND d.deptype = 'e');
