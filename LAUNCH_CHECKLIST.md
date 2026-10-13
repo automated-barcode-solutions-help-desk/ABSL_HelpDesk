@@ -127,6 +127,10 @@ workable:
   space against the limits, and **Download backup** saves every table as one
   JSON file. Download one every week and keep it in Google Drive or on a USB
   drive — this is the only backup on the Free plan.
+- **Automatic Google Drive copies** of receipts, job photos, monthly report
+  sheets and a daily database backup: set up once with
+  [GOOGLE_DRIVE_BACKUP.md](GOOGLE_DRIVE_BACKUP.md). With it running, the
+  manual download above is only a spare.
 - **System Alerts** (also emailed to the CEO) when photos or the database
   pass 80%, and a weekly reminder when no backup has been taken.
 - **Cron → Enable cleanup**: the email job runs every minute, so turn on
