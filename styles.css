@@ -2932,3 +2932,171 @@ a.stat-card-link:focus-visible {
   box-shadow: 0 0 0 3px var(--teal-light);
   outline: none;
 }
+
+/* Service Plan round two (0040): days, other sites, assigning, printing. */
+.trip-pair {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+
+.trip-pair label {
+  display: grid;
+  gap: 4px;
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--ink-secondary);
+}
+
+.trip-pair select {
+  width: 100%;
+  min-height: 44px;
+  padding: 10px 12px;
+  border: 1px solid var(--line-solid);
+  border-radius: var(--radius);
+  background: var(--paper-solid);
+  color: var(--ink);
+}
+
+.trip-assign {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px 10px;
+  align-items: end;
+  margin-bottom: 12px;
+  padding: 12px;
+  border: 1px solid var(--line-solid);
+  border-radius: var(--radius);
+  background: var(--paper-solid);
+}
+
+.trip-assign label,
+.trip-assign p {
+  grid-column: 1 / -1;
+  margin: 0;
+}
+
+.trip-assign label {
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.trip-assign select {
+  min-height: 44px;
+  padding: 10px 12px;
+  border: 1px solid var(--line-solid);
+  border-radius: var(--radius);
+  background: #ffffff;
+}
+
+.trip-days {
+  display: grid;
+  gap: 16px;
+  margin: 14px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.trip-day-title {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 12px;
+  margin-bottom: 8px;
+}
+
+.trip-day-title a {
+  margin-left: auto;
+}
+
+.trip-day .trip-itinerary {
+  margin-top: 0;
+}
+
+.trip-night {
+  padding: 4px 12px;
+}
+
+.trip-pin-site span {
+  background: #64748b;
+}
+
+.legend-dot {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  margin: 0 4px 0 8px;
+  border-radius: 50%;
+  vertical-align: middle;
+}
+
+.legend-dot.is-overdue {
+  background: #dc2626;
+}
+
+.legend-dot.is-pending {
+  background: #2563eb;
+}
+
+.legend-dot.is-done {
+  background: #059669;
+}
+
+.legend-dot.is-none {
+  background: #94a3b8;
+}
+
+.import-preview {
+  display: grid;
+  gap: 8px;
+}
+
+.import-preview ul {
+  margin: 6px 0 0;
+  padding-left: 18px;
+}
+
+.print-only {
+  display: none;
+}
+
+@media print {
+  .topbar,
+  #appNav,
+  .page-heading,
+  .print-hide,
+  .toast-container,
+  .modal-overlay {
+    display: none !important;
+  }
+
+  .print-only {
+    display: block;
+  }
+
+  body,
+  .app-shell {
+    background: #ffffff !important;
+    padding: 0 !important;
+  }
+
+  .trip-layout {
+    display: block;
+  }
+
+  .panel {
+    border: 0;
+    box-shadow: none;
+    padding: 0;
+    backdrop-filter: none;
+  }
+
+  .trip-stop,
+  .trip-day {
+    break-inside: avoid;
+  }
+
+  .trip-stop .print-only {
+    margin-top: 8px;
+  }
+}

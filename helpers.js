@@ -688,6 +688,218 @@ function parseLatLng(text) {
   return { lat, lng };
 }
 
+/**
+ * Splits an ordered trip into days. A day ends (overnight at its last
+ * stop) when the next drive plus its stop would go past maxHoursPerDay, or
+ * when it already has as many stops as one Google Maps link can carry.
+ * The drive back to `end` (when given) belongs to the last day, or to a
+ * day of its own when it doesn't fit.
+ * Returns [{ day, from, stops, to, km, driveHours, stopHours }].
+ */
+function splitTripIntoDays(start, order, end = null, { maxHoursPerDay = 8, stopMinutes = 45 } = {}) {
+  const stopHours = stopMinutes / 60;
+  const maxStops = GOOGLE_MAPS_MAX_WAYPOINTS;
+  const days = [];
+  let current = { from: start, stops: [], km: 0, driveHours: 0, stopHours: 0 };
+  let at = start;
+
+  for (const stop of order || []) {
+    const km = roadKm(at, stop);
+    const hours = km / TRIP_AVERAGE_KMH;
+    const used = current.driveHours + current.stopHours;
+    if (current.stops.length && (used + hours + stopHours > maxHoursPerDay || current.stops.length >= maxStops)) {
+      days.push(current);
+      current = { from: at, stops: [], km: 0, driveHours: 0, stopHours: 0 };
+    }
+    current.stops.push(stop);
+    current.km += km;
+    current.driveHours += hours;
+    current.stopHours += stopHours;
+    at = stop;
+  }
+
+  if (end) {
+    const km = roadKm(at, end);
+    const hours = km / TRIP_AVERAGE_KMH;
+    if (current.stops.length && current.driveHours + current.stopHours + hours > maxHoursPerDay) {
+      days.push(current);
+      current = { from: at, stops: [], km: 0, driveHours: 0, stopHours: 0 };
+    }
+    current.km += km;
+    current.driveHours += hours;
+  }
+  if (current.stops.length || end) days.push(current);
+
+  return days.map((d, i) => ({ ...d, day: i + 1, to: i === days.length - 1 ? end : null }));
+}
+
+/**
+ * The trip as plain text, for WhatsApp or SMS: each day's stops and its
+ * Google Maps link. describe(stop) gives a stop's line.
+ */
+function tripShareText(days, { title = "Trip", describe = (s) => s.label || s.name || "" } = {}) {
+  const lines = [title];
+  for (const d of days) {
+    const hours = tripHours(d.km) + (d.stopHours || 0);
+    lines.push("", `Day ${d.day} (about ${Math.round(d.km)} km, ${Math.round(hours * 2) / 2} h)`);
+    d.stops.forEach((s, i) => lines.push(`${i + 1}. ${describe(s)}`));
+    if (d.to && !d.stops.length) lines.push("Drive back");
+    lines.push(`Map: ${googleMapsTripUrl(d.from, d.stops, d.to)}`);
+  }
+  return lines.join("\n");
+}
+
+/** The August-to-July contract year a date falls in, e.g. "2026/27". */
+function currentContractYear(date = new Date()) {
+  const y = date.getFullYear();
+  const start = date.getMonth() >= 7 ? y : y - 1;
+  return `${start}/${String(start + 1).slice(-2)}`;
+}
+
+/** "2025-26", "2025/2026", "2025 / 26" -> "2025/26"; anything else -> "". */
+function normalizeContractYear(value) {
+  // The second year must follow the first, so a date range such as
+  // "01.08.2025-31.07.2026" isn't read as "2025/31".
+  const match = String(value || "").trim().match(/^(20\d{2})\s*[/-]\s*(?:20)?(\d{2})$/);
+  if (!match || (Number(match[1]) + 1) % 100 !== Number(match[2])) return "";
+  return `${match[1]}/${match[2]}`;
+}
+
+/**
+ * A date from a spreadsheet cell: a real date, or text such as
+ * "2025.11.28", "28.11.2025", "2025-11-28" or "28/11/2025".
+ * Returns "YYYY-MM-DD" or "".
+ */
+function parseSheetDate(value) {
+  if (value instanceof Date && !Number.isNaN(value.getTime())) {
+    return `${value.getUTCFullYear()}-${String(value.getUTCMonth() + 1).padStart(2, "0")}-${String(value.getUTCDate()).padStart(2, "0")}`;
+  }
+  const text = String(value || "").trim();
+  let m = text.match(/^(20\d{2})[./-](\d{1,2})[./-](\d{1,2})/);
+  let y, mo, d;
+  if (m) [, y, mo, d] = m;
+  else if ((m = text.match(/^(\d{1,2})[./-](\d{1,2})[./-](20\d{2})/))) [, d, mo, y] = m;
+  else return "";
+  const date = new Date(Date.UTC(Number(y), Number(mo) - 1, Number(d)));
+  if (date.getUTCMonth() !== Number(mo) - 1 || date.getUTCDate() !== Number(d)) return "";
+  return `${y}-${String(mo).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
+}
+
+/** Site names compared loosely: case, punctuation and a leading/trailing "Seylan" ignored. */
+function normalizeSiteName(value) {
+  return String(value || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, " ")
+    .replace(/^seylan\s+|\s+seylan$/g, "")
+    .trim();
+}
+
+const PLAN_IMPORT_COLUMNS = {
+  client: ["client", "customer", "company"],
+  name: ["site", "site name", "location", "location name", "branch", "centre", "center"],
+  place: ["town", "city", "place"],
+  address: ["address"],
+  serial: ["device serial", "serial", "serial no", "serial number", "seriyal no"],
+  contactName: ["contact name", "contact person", "contact"],
+  contactPhone: ["contact phone", "phone", "telephone", "mobile"],
+  contractYear: ["contract year", "year"],
+  visit: ["visit"],
+  status: ["status"],
+  doneDate: ["date done", "service date", "date"],
+  serviceCall: ["service call", "service call no", "service call number"],
+  dueBy: ["due by", "due date", "due"]
+};
+
+/**
+ * Reads rows from a Service Plan import sheet (objects keyed by the
+ * sheet's headings, in any of the spellings above) against the sites
+ * already known. Nothing is saved here: the result says what an import
+ * would do, for the person to check first.
+ *   sites:    { client, name, siteId (existing) or null, changes, position }
+ *   services: { client, name, contractYear, visit, status, doneDate, serviceCall, dueBy }
+ *   warnings: [text]
+ */
+function parseServicePlanImport(rows, existingSites, places, { defaultClient = "" } = {}) {
+  const warnings = [];
+  const sites = new Map();
+  const services = new Map();
+  const known = new Map((existingSites || []).map((s) => [`${s.client.toLowerCase()}|${normalizeSiteName(s.name)}`, s]));
+
+  (rows || []).forEach((raw, index) => {
+    const rowNo = index + 2; // row 1 is the heading
+    const cell = {};
+    for (const [key, names] of Object.entries(PLAN_IMPORT_COLUMNS)) {
+      const heading = Object.keys(raw).find((h) => names.includes(String(h).toLowerCase().trim()));
+      const value = heading === undefined ? "" : raw[heading];
+      cell[key] = value instanceof Date ? value : String(value ?? "").trim();
+    }
+    const client = cell.client || defaultClient;
+    const name = cell.name;
+    if (!client || !name) {
+      if (Object.values(cell).some((v) => v)) warnings.push(`Row ${rowNo}: no client or site name, skipped.`);
+      return;
+    }
+
+    const key = `${client.toLowerCase()}|${normalizeSiteName(name)}`;
+    const existing = known.get(key);
+    if (!sites.has(key)) {
+      const changes = {};
+      if (cell.address) changes.address = cell.address;
+      if (cell.place) changes.place = cell.place;
+      if (cell.serial) changes.device_serial = cell.serial;
+      if (cell.contactName) changes.contact_name = cell.contactName;
+      if (cell.contactPhone) changes.contact_phone = cell.contactPhone;
+      if (existing) {
+        for (const field of Object.keys(changes)) if ((existing[field] || "") === changes[field]) delete changes[field];
+      }
+      let position = null;
+      if (!existing || changes.place) {
+        const town = (places || []).find((p) => p.name.toLowerCase() === String(cell.place || "").toLowerCase()) ||
+          findPlaceInText(`${cell.place} ${name}`, places);
+        if (town) position = { lat: town.lat, lng: town.lng };
+        else if (!existing) warnings.push(`Row ${rowNo}: no known town for "${name}" - it will have no map position until you set one.`);
+      }
+      sites.set(key, {
+        client: existing ? existing.client : client,
+        name: existing ? existing.name : name,
+        siteId: existing ? existing.id : null,
+        changes,
+        position
+      });
+    }
+
+    const contractYear = normalizeContractYear(cell.contractYear);
+    if (!cell.contractYear && !cell.status && !cell.doneDate && !cell.serviceCall) return;
+    if (!contractYear) {
+      warnings.push(`Row ${rowNo}: contract year "${cell.contractYear}" not understood (use 2026/27), service skipped.`);
+      return;
+    }
+    const s = String(cell.status || "").toLowerCase();
+    const status = /^(done|complete|completed|yes|finished|serviced)/.test(s) ? "done"
+      : /^(skip|skipped|n\/?a|not required|cancel)/.test(s) ? "skipped"
+      : cell.doneDate || cell.serviceCall ? "done"
+      : "pending";
+    const doneDate = cell.doneDate ? parseSheetDate(cell.doneDate) : "";
+    if (cell.doneDate && !doneDate) warnings.push(`Row ${rowNo}: date "${cell.doneDate}" not understood, left empty.`);
+    if (status === "done" && !cell.serviceCall) warnings.push(`Row ${rowNo}: ${name} marked done without a service call number.`);
+    const dueBy = cell.dueBy ? parseSheetDate(cell.dueBy) : "";
+    const visit = cell.visit || "Service";
+    services.set(`${key}|${contractYear}|${visit.toLowerCase()}`, {
+      key,
+      client,
+      name,
+      contractYear,
+      visit,
+      status,
+      doneDate,
+      serviceCall: String(cell.serviceCall || ""),
+      dueBy
+    });
+  });
+
+  return { sites: [...sites.values()], services: [...services.values()], warnings };
+}
+
 if (typeof module !== "undefined" && module.exports) {
   module.exports = {
     UPLOAD_LIMITS,
@@ -737,6 +949,14 @@ if (typeof module !== "undefined" && module.exports) {
     tripHours,
     googleMapsTripUrl,
     findPlaceInText,
-    parseLatLng
+    parseLatLng,
+    splitTripIntoDays,
+    tripShareText,
+    currentContractYear,
+    normalizeContractYear,
+    parseSheetDate,
+    normalizeSiteName,
+    PLAN_IMPORT_COLUMNS,
+    parseServicePlanImport
   };
 }

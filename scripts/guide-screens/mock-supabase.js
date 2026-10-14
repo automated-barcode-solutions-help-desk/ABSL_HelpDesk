@@ -109,7 +109,7 @@
   const site = (n, client, name, place, lat, lng, extra = {}) => ({ id: uuid(900 + n), client, name, place, lat, lng, address: null, region: null, device_serial: null, location_exact: false, is_base: false, active: true, ...extra });
   const sites = [
     site(0, "ABSL", "ABSL Office", "Colombo", 6.9387, 79.8542, { is_base: true }),
-    site(1, "Seylan Bank", "Vavuniya", "Vavuniya", 8.7591, 80.4999),
+    site(1, "Seylan Bank", "Vavuniya", "Vavuniya", 8.7591, 80.4999, { contact_name: "Branch manager", contact_phone: "0242222222", address: "Kandy Road, Vavuniya" }),
     site(2, "Seylan Bank", "Anuradhapura", "Anuradhapura", 8.3349, 80.4108),
     site(3, "Seylan Bank", "Mullaitivu", "Mullaitivu", 9.2698, 80.8146),
     site(4, "National Youth Corps", "Mannar", "Mannar", 8.9806, 79.904, { device_serial: "OLK6060056061500005" }),
@@ -118,7 +118,10 @@
     site(7, "Seylan Bank", "Batticaloa", "Batticaloa", 7.8383, 81.5569),
     site(8, "National Youth Corps", "Galle", "Galle", 6.0329, 80.2151),
     site(9, "SLT-Mobitel", "Kilinochchi Teleshop", "Kilinochchi", 9.3841, 80.4087),
-    site(10, "Seylan Bank", "Kandy", "Kandy", 7.2932, 80.6350)
+    site(10, "Seylan Bank", "Kandy", "Kandy", 7.2932, 80.6350),
+    site(11, "Seylan Bank", "Chunnakam", "Chunnakam", 9.7459, 80.0328),
+    site(12, "Central Environmental Authority", "Jaffna District Office", "Jaffna", 9.6650, 80.0090),
+    site(13, "Seylan Bank", "Medawachchiya", "Medawachchiya", 8.5387, 80.4932)
   ];
   const plan = (n, siteN, year, due, extra = {}) => ({ id: uuid(950 + n), site_id: uuid(900 + siteN), contract_year: year, visit: "Service", due_by: due, status: "pending", ticket_id: null, service_call_number: null, done_at: null, notes: null, ...extra });
   const plans = [
@@ -165,12 +168,13 @@
   function query(source, kind, args) {
     const filters = [];
     let mode = "many";
+    let written = null; // rows given to insert/upsert, returned as Supabase would
     const builder = new Proxy({}, {
       get(_, prop) {
         if (prop === "then") {
           return (resolve, reject) => {
             try {
-              let data = kind === "rpc" ? (rpcs[source] ? rpcs[source](args) : null) : (tables[source] ? tables[source]() : []);
+              let data = written || (kind === "rpc" ? (rpcs[source] ? rpcs[source](args) : null) : (tables[source] ? tables[source]() : []));
               if (Array.isArray(data)) {
                 data = data.filter((row) => filters.every(([col, val]) => !(col in row) || String(row[col]) === String(val)));
                 if (mode !== "many") data = data[0] || null;
@@ -182,6 +186,12 @@
           };
         }
         if (prop === "eq") return (col, val) => { filters.push([col, val]); return builder; };
+        if (prop === "insert" || prop === "upsert") {
+          return (rows) => {
+            written = (Array.isArray(rows) ? rows : [rows]).map((row, i) => ({ id: uuid(5000 + i), ...row }));
+            return builder;
+          };
+        }
         if (prop === "single" || prop === "maybeSingle") return () => { mode = "one"; return builder; };
         return () => builder;
       }

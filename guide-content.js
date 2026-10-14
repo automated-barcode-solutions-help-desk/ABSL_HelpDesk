@@ -39,6 +39,7 @@ const GUIDE_IMAGES = {
   "main-console-staff": { src: "guide/main-console-staff.webp" },
   "main-console-backup": { src: "guide/main-console-backup.webp" },
   "trip-planner": { src: "guide/trip-planner.webp" },
+  "trip-planner-office": { src: "guide/trip-planner-office.webp" },
   "trip-planner-phone": { src: "guide/trip-planner-phone.webp", phone: true },
   "service-plan": { src: "guide/service-plan.webp" }
 };
@@ -204,9 +205,10 @@ const GUIDE_CONTENT = {
             images: ["trip-planner-phone"],
             steps: [
               "Going somewhere far? Open **Trip Planner** from the menu bar, or press **Plan a trip** on an open job.",
-              "Choose where you're **Going to** (a job or a town). Pending client services on the way are ticked and put in the quickest order on the map; untick any you can't do.",
-              "Press **Open route in Google Maps** to drive it stop by stop.",
-              "At each stop press **Start service**: it becomes your job. Mark it **In Progress**, then **Resolved** with the service call number and receipt photo, and the service is marked done."
+              "Choose where you're **Going to**: a job, a town, or the client sites around you. Pending services on the way are ticked; **Other client sites on the way** (nothing due there) can be ticked too.",
+              "Long trips are split into days (set your **Driving day** and **Time at each stop**). Each day has its own Google Maps link; a one-day trip has **Open route in Google Maps**.",
+              "**Share trip** sends the stops and links to WhatsApp; **Print trip sheet** prints them with space for service call numbers.",
+              "At each stop press **Start service** (or **Start visit** where nothing is due): it becomes your job. Mark it **In Progress**, then **Resolved** with the service call number and receipt photo, and the service is marked done."
             ]
           },
           {
@@ -269,13 +271,14 @@ const GUIDE_CONTENT = {
           },
           {
             title: "Service Plan and trips",
-            images: ["service-plan","trip-planner"],
+            images: ["service-plan","trip-planner-office"],
             steps: [
-              "**Service Plan** lists every client site and the service due there (Seylan branches, Youth Corps centres, SLT and CEA offices) on a map and in a table.",
-              "Filter by client, status or contract year; **Overdue** ones are listed first. **Download Excel** saves the list.",
-              "**Mark done** records a service done outside the helpdesk, with its service call number; **Skip** leaves a site out for that year.",
-              "**Mark sites due** adds a pending service for every site of a client, for a new contract year. Use **Add site** or **Edit** to set a site's exact map position: paste the numbers from Google Maps.",
-              "**Plan a trip** opens the **Trip Planner**: choose where a technician is going and see the services on the way."
+              "**Service Plan** shows every client site on a map (red overdue, blue pending, green done, grey nothing due) and the services due in a table.",
+              "To load an updated service sheet: **Download template** (your sites as an Excel sheet), fill in Contract year, Status, Date done and Service call, then **Import from Excel**. You see what will change before anything is saved.",
+              "**Mark sites due** adds a service for every site of a client for a contract year (for Seylan, 1st service and 2nd service). **Mark done** records a service done outside the helpdesk; **Skip** leaves a site out.",
+              "**Add site** or **Edit** a site: its contact person and phone (shown to technicians on trips), device serial and exact map position (paste the numbers from Google Maps). Untick **Active** for sites ABSL no longer services.",
+              "**Plan a trip** opens the **Trip Planner**. Choose a technician under **Give these stops to** and press **Assign the trip**: every stop becomes a job for them and they're emailed.",
+              "Set the ABSL office's exact position once (the notice at the top of the page): every trip starts there."
             ]
           },
           {
@@ -524,9 +527,10 @@ const GUIDE_CONTENT = {
             images: ["trip-planner-phone"],
             steps: [
               "දුර ගමනක් යනවාද? මෙනු තීරුවෙන් **Trip Planner** විවෘත කරන්න, නැතහොත් විවෘත වැඩයක **Plan a trip** ඔබන්න.",
-              "ඔබ යන තැන **Going to** යටතේ තෝරන්න (වැඩයක් හෝ නගරයක්). මඟ දිගේ ඇති පාරිභෝගික සේවා tick කර, ඉක්මන්ම පිළිවෙළට සිතියමේ පෙන්වයි; කළ නොහැකි ඒවා untick කරන්න.",
-              "එක් එක් නැවතුම අනුව යාමට **Open route in Google Maps** ඔබන්න.",
-              "සෑම නැවතුමකදීම **Start service** ඔබන්න: එය ඔබේ වැඩයක් බවට පත් වේ. **In Progress** කර, ඉන්පසු service call අංකය සහ රිසිට් ඡායාරූපය සමඟ **Resolved** කරන්න; එවිට සේවාව සම්පූර්ණ ලෙස සටහන් වේ."
+              "**Going to** යටතේ ඔබ යන තැන තෝරන්න: වැඩයක්, නගරයක්, හෝ ඔබ අවට ඇති පාරිභෝගික ස්ථාන. මඟ දිගේ ඇති pending සේවා tick කර ඇත; **Other client sites on the way** (කිසිවක් due නැති ස්ථාන) ද tick කළ හැක.",
+              "දිගු ගමන් දින වලට බෙදා ඇත (**Driving day** සහ **Time at each stop** සකසන්න). සෑම දිනකටම වෙනම Google Maps link එකක් ඇත; එක් දින ගමනකට **Open route in Google Maps** ඇත.",
+              "**Share trip** මඟින් නැවතුම් සහ links WhatsApp වෙත යවයි; **Print trip sheet** මඟින් service call අංක ලිවීමට ඉඩ සහිතව මුද්‍රණය කරයි.",
+              "සෑම නැවතුමකදීම **Start service** ඔබන්න (කිසිවක් due නැති තැනක **Start visit**): එය ඔබේ වැඩයක් වේ. **In Progress** කර, ඉන්පසු service call අංකය සහ රිසිට් ඡායාරූපය සමඟ **Resolved** කරන්න; එවිට සේවාව සම්පූර්ණ ලෙස සටහන් වේ."
             ]
           },
           {
@@ -589,13 +593,14 @@ const GUIDE_CONTENT = {
           },
           {
             title: "Service Plan සහ ගමන්",
-            images: ["service-plan","trip-planner"],
+            images: ["service-plan","trip-planner-office"],
             steps: [
-              "**Service Plan** හි සෑම පාරිභෝගික ස්ථානයක්ම සහ එහි කළ යුතු සේවාව (Seylan ශාඛා, Youth Corps මධ්‍යස්ථාන, SLT සහ CEA කාර්යාල) සිතියමක සහ වගුවක ඇත.",
-              "පාරිභෝගිකයා, තත්ත්වය හෝ කොන්ත්‍රාත් වර්ෂය අනුව පෙරන්න; **Overdue** ඒවා මුලින්ම පෙන්වයි. **Download Excel** මඟින් ලැයිස්තුව සුරකියි.",
-              "**Mark done** මඟින් helpdesk එකෙන් පිටත කළ සේවාවක් එහි service call අංකය සමඟ සටහන් කරයි; **Skip** මඟින් එම වර්ෂයට ස්ථානයක් ඉවත් කරයි.",
-              "**Mark sites due** මඟින් නව කොන්ත්‍රාත් වර්ෂයක් සඳහා පාරිභෝගිකයෙකුගේ සෑම ස්ථානයකටම කළ යුතු සේවාවක් එක් කරයි. ස්ථානයක නිවැරදි සිතියම් ස්ථානය සැකසීමට **Add site** හෝ **Edit** භාවිත කරන්න: Google Maps හි අංක paste කරන්න.",
-              "**Plan a trip** මඟින් **Trip Planner** විවෘත කරයි: technician කෙනෙකු යන තැන තෝරා මඟ දිගේ ඇති සේවා බලන්න."
+              "**Service Plan** හි සෑම පාරිභෝගික ස්ථානයක්ම සිතියමක (රතු overdue, නිල් pending, කොළ done, අළු කිසිවක් due නැත) සහ due සේවා වගුවක පෙන්වයි.",
+              "යාවත්කාලීන සේවා sheet එකක් දැමීමට: **Download template** (ඔබේ ස්ථාන Excel sheet එකක් ලෙස) ලබා ගෙන Contract year, Status, Date done සහ Service call පුරවා, **Import from Excel** කරන්න. කිසිවක් සුරැකීමට පෙර වෙනස් වන දේ ඔබට පෙනේ.",
+              "**Mark sites due** මඟින් කොන්ත්‍රාත් වර්ෂයක් සඳහා පාරිභෝගිකයෙකුගේ සෑම ස්ථානයකටම සේවාවක් එක් කරයි (Seylan සඳහා 1st service සහ 2nd service). **Mark done** මඟින් helpdesk එකෙන් පිටත කළ සේවාවක් සටහන් කරයි; **Skip** මඟින් ස්ථානයක් ඉවත් කරයි.",
+              "**Add site** හෝ **Edit**: ස්ථානයේ සම්බන්ධ විය යුතු පුද්ගලයා සහ දුරකථනය (ගමන් වලදී technicians ලාට පෙන්වයි), device serial, සහ නිවැරදි සිතියම් ස්ථානය (Google Maps හි අංක paste කරන්න). ABSL තවදුරටත් සේවා නොකරන ස්ථාන සඳහා **Active** untick කරන්න.",
+              "**Plan a trip** මඟින් **Trip Planner** විවෘත කරයි. **Give these stops to** යටතේ technician කෙනෙකු තෝරා **Assign the trip** ඔබන්න: සෑම නැවතුමක්ම ඔවුන්ට වැඩයක් වන අතර ඔවුන්ට ඊමේල් කෙරේ.",
+              "ABSL කාර්යාලයේ නිවැරදි ස්ථානය එක් වරක් සකසන්න (පිටුවේ ඉහළ ඇති notice එක): සෑම ගමනක්ම එතැනින් ආරම්භ වේ."
             ]
           },
           {
@@ -844,9 +849,10 @@ const GUIDE_CONTENT = {
             images: ["trip-planner-phone"],
             steps: [
               "தொலைதூரம் செல்கிறீர்களா? மெனு பட்டையிலிருந்து **Trip Planner** ஐத் திறங்கள், அல்லது திறந்த வேலையில் **Plan a trip** அழுத்துங்கள்.",
-              "**Going to** இல் நீங்கள் செல்லும் இடத்தைத் தேர்ந்தெடுங்கள் (ஒரு வேலை அல்லது நகரம்). வழியில் உள்ள நிலுவைச் சேவைகள் tick செய்யப்பட்டு, வேகமான வரிசையில் வரைபடத்தில் காட்டப்படும்; செய்ய முடியாதவற்றை untick செய்யுங்கள்.",
-              "ஒவ்வொரு நிறுத்தமாகச் செல்ல **Open route in Google Maps** அழுத்துங்கள்.",
-              "ஒவ்வொரு நிறுத்தத்திலும் **Start service** அழுத்துங்கள்: அது உங்கள் வேலையாகும். **In Progress** ஆக்கி, பின்னர் service call எண் மற்றும் ரசீதுப் புகைப்படத்துடன் **Resolved** செய்யுங்கள்; சேவை முடிந்ததாகக் குறிக்கப்படும்."
+              "**Going to** இல் செல்லும் இடத்தைத் தேர்ந்தெடுங்கள்: ஒரு வேலை, ஒரு நகரம், அல்லது உங்களைச் சுற்றியுள்ள வாடிக்கையாளர் இடங்கள். வழியில் உள்ள நிலுவைச் சேவைகள் tick செய்யப்பட்டிருக்கும்; **Other client sites on the way** (நிலுவை இல்லாத இடங்கள்) ஐயும் tick செய்யலாம்.",
+              "நீண்ட பயணங்கள் நாட்களாகப் பிரிக்கப்படும் (**Driving day** மற்றும் **Time at each stop** ஐ அமையுங்கள்). ஒவ்வொரு நாளுக்கும் தனி Google Maps இணைப்பு உண்டு; ஒரு நாள் பயணத்துக்கு **Open route in Google Maps** உள்ளது.",
+              "**Share trip** நிறுத்தங்களையும் இணைப்புகளையும் WhatsApp க்கு அனுப்பும்; **Print trip sheet** service call எண்களுக்கான இடத்துடன் அச்சிடும்.",
+              "ஒவ்வொரு நிறுத்தத்திலும் **Start service** அழுத்துங்கள் (நிலுவை இல்லாத இடத்தில் **Start visit**): அது உங்கள் வேலையாகும். **In Progress** ஆக்கி, பின்னர் service call எண் மற்றும் ரசீதுப் புகைப்படத்துடன் **Resolved** செய்யுங்கள்; சேவை முடிந்ததாகக் குறிக்கப்படும்."
             ]
           },
           {
@@ -909,13 +915,14 @@ const GUIDE_CONTENT = {
           },
           {
             title: "Service Plan மற்றும் பயணங்கள்",
-            images: ["service-plan","trip-planner"],
+            images: ["service-plan","trip-planner-office"],
             steps: [
-              "**Service Plan** இல் ஒவ்வொரு வாடிக்கையாளர் இடமும் அங்கு செய்ய வேண்டிய சேவையும் (Seylan கிளைகள், Youth Corps நிலையங்கள், SLT மற்றும் CEA அலுவலகங்கள்) வரைபடத்திலும் அட்டவணையிலும் உள்ளன.",
-              "வாடிக்கையாளர், நிலை அல்லது ஒப்பந்த ஆண்டு மூலம் வடிகட்டுங்கள்; **Overdue** ஆனவை முதலில் காட்டப்படும். **Download Excel** பட்டியலைச் சேமிக்கும்.",
-              "**Mark done** helpdesk க்கு வெளியே செய்த சேவையை அதன் service call எண்ணுடன் பதிவு செய்யும்; **Skip** அந்த ஆண்டுக்கு ஒரு இடத்தை விலக்கும்.",
-              "**Mark sites due** புதிய ஒப்பந்த ஆண்டுக்கு ஒரு வாடிக்கையாளரின் ஒவ்வொரு இடத்துக்கும் நிலுவைச் சேவையைச் சேர்க்கும். ஒரு இடத்தின் சரியான வரைபட இருப்பிடத்தை அமைக்க **Add site** அல்லது **Edit** பயன்படுத்துங்கள்: Google Maps இலிருந்து எண்களை paste செய்யுங்கள்.",
-              "**Plan a trip** **Trip Planner** ஐத் திறக்கும்: technician செல்லும் இடத்தைத் தேர்ந்தெடுத்து வழியில் உள்ள சேவைகளைப் பாருங்கள்."
+              "**Service Plan** ஒவ்வொரு வாடிக்கையாளர் இடத்தையும் வரைபடத்தில் (சிவப்பு overdue, நீலம் pending, பச்சை done, சாம்பல் நிலுவை இல்லை) மற்றும் நிலுவைச் சேவைகளை அட்டவணையில் காட்டும்.",
+              "புதுப்பிக்கப்பட்ட சேவை sheet ஐ ஏற்ற: **Download template** (உங்கள் இடங்கள் Excel sheet ஆக) எடுத்து Contract year, Status, Date done மற்றும் Service call ஐ நிரப்பி, **Import from Excel** செய்யுங்கள். எதுவும் சேமிக்கப்படும் முன் என்ன மாறும் என்பதைப் பார்ப்பீர்கள்.",
+              "**Mark sites due** ஒரு ஒப்பந்த ஆண்டுக்கு வாடிக்கையாளரின் ஒவ்வொரு இடத்துக்கும் சேவையைச் சேர்க்கும் (Seylan க்கு 1st service மற்றும் 2nd service). **Mark done** helpdesk க்கு வெளியே செய்த சேவையைப் பதிவு செய்யும்; **Skip** ஒரு இடத்தை விலக்கும்.",
+              "**Add site** அல்லது **Edit**: இடத்தின் தொடர்பு நபர் மற்றும் தொலைபேசி (பயணங்களில் technicians க்குக் காட்டப்படும்), device serial, சரியான வரைபட இருப்பிடம் (Google Maps இலிருந்து எண்களை paste செய்யுங்கள்). ABSL இனி சேவை செய்யாத இடங்களுக்கு **Active** ஐ untick செய்யுங்கள்.",
+              "**Plan a trip** **Trip Planner** ஐத் திறக்கும். **Give these stops to** இல் technician ஐத் தேர்ந்தெடுத்து **Assign the trip** அழுத்துங்கள்: ஒவ்வொரு நிறுத்தமும் அவருக்கு வேலையாகும், அவருக்கு மின்னஞ்சல் செல்லும்.",
+              "ABSL அலுவலகத்தின் சரியான இருப்பிடத்தை ஒருமுறை அமையுங்கள் (பக்கத்தின் மேலே உள்ள அறிவிப்பு): ஒவ்வொரு பயணமும் அங்கிருந்து தொடங்கும்."
             ]
           },
           {

@@ -5718,17 +5718,19 @@ function pendingApprovalPage() {
   `;
 }
 
-// --- Service Plan and Trip Planner (0039) ------------------------------
+// --- Service Plan and Trip Planner (0039, 0040) ------------------------
 // Client sites (Seylan branches, Youth Corps centres, SLT and CEA offices)
 // and the services due at them. The Trip Planner turns "I'm going to
-// Jaffna" into "and on the way, these pending services", ordered into one
-// trip and opened in Google Maps. All route maths is in helpers.js
-// (nearbyStops, orderStops, googleMapsTripUrl); nothing here calls a paid
-// API. The map is OpenStreetMap through Leaflet (vendor/leaflet-1.9.4),
-// which only service-plan.html and trip-planner.html load.
+// Jaffna" into "and on the way, these pending services and these other
+// client sites", ordered into a trip of one or more days and opened in
+// Google Maps. All route maths is in helpers.js (nearbyStops, orderStops,
+// splitTripIntoDays, googleMapsTripUrl); nothing here calls a paid API.
+// The map is OpenStreetMap through Leaflet (vendor/leaflet-1.9.4), which
+// only service-plan.html and trip-planner.html load.
 
-// Google Maps takes 9 stops between start and finish: the job itself plus 8.
-const TRIP_MAX_EXTRA_STOPS = 8;
+// Stops a trip can take besides its destination; days keep each Google
+// Maps link within its 9-stop limit.
+const TRIP_MAX_STOPS = 20;
 let servicePlanError = "";
 
 function isStaffRole(role = userRole()) {
@@ -5755,6 +5757,12 @@ async function loadServicePlan() {
   state.plannedServices = plans.data || [];
 }
 
+function sitePoint(site) {
+  return site && site.lat !== null && site.lat !== undefined
+    ? { lat: Number(site.lat), lng: Number(site.lng) }
+    : { lat: null, lng: null };
+}
+
 // One row per planned service, with its site's details alongside.
 function servicePlanRows() {
   const sites = new Map(state.clientSites.map((site) => [site.id, site]));
@@ -5763,14 +5771,17 @@ function servicePlanRows() {
     const site = sites.get(plan.site_id) || {};
     return {
       id: plan.id,
+      kind: "plan",
       siteId: plan.site_id,
       client: site.client || "",
       name: site.name || "",
       place: site.place || "",
+      address: site.address || "",
       region: site.region || "",
       serial: site.device_serial || "",
-      lat: site.lat === null || site.lat === undefined ? null : Number(site.lat),
-      lng: site.lng === null || site.lng === undefined ? null : Number(site.lng),
+      contactName: site.contact_name || "",
+      contactPhone: site.contact_phone || "",
+      ...sitePoint(site),
       exact: Boolean(site.location_exact),
       active: site.active !== false,
       contractYear: plan.contract_year,
@@ -5786,7 +5797,40 @@ function servicePlanRows() {
   });
 }
 
+// The most recent finished service at each site.
+function lastServiceBySite() {
+  const last = new Map();
+  for (const plan of state.plannedServices) {
+    if (plan.status !== "done" || !plan.done_at) continue;
+    const seen = last.get(plan.site_id);
+    if (!seen || plan.done_at > seen.done_at) last.set(plan.site_id, plan);
+  }
+  return last;
+}
+
+// Active client sites with nothing pending - "other sites on the way".
+function siteVisitRows() {
+  const pending = new Set(state.plannedServices.filter((p) => p.status === "pending").map((p) => p.site_id));
+  const last = lastServiceBySite();
+  return state.clientSites
+    .filter((site) => !site.is_base && site.active !== false && site.lat !== null && !pending.has(site.id))
+    .map((site) => ({
+      id: `site:${site.id}`,
+      kind: "site",
+      siteId: site.id,
+      client: site.client,
+      name: site.name,
+      place: site.place || "",
+      address: site.address || "",
+      contactName: site.contact_name || "",
+      contactPhone: site.contact_phone || "",
+      ...sitePoint(site),
+      lastDone: last.get(site.id)?.done_at || ""
+    }));
+}
+
 function planStatusBadge(row) {
+  if (row.kind === "site") return `<span class="badge badge-closed">Nothing due</span>`;
   if (row.status === "done") return `<span class="badge badge-resolved">Done</span>`;
   if (row.status === "skipped") return `<span class="badge badge-closed">Skipped</span>`;
   return row.overdue
@@ -5802,6 +5846,14 @@ function servicePlanUnavailable() {
   return servicePlanError
     ? `<section class="panel"><div class="notice">The Service Plan could not load: ${escapeHtml(servicePlanError)}. If it says the table does not exist, migration 0039 hasn't been run yet.</div></section>`
     : "";
+}
+
+function contactLine(row) {
+  if (!row.contactName && !row.contactPhone) return "";
+  const phone = row.contactPhone
+    ? ` <a href="tel:${escapeHtml(telHref(row.contactPhone))}">${escapeHtml(row.contactPhone)}</a>`
+    : "";
+  return `<div class="small">Contact: ${escapeHtml(row.contactName || "")}${phone}</div>`;
 }
 
 // Both pages redraw their map after every render (a live update replaces
@@ -5844,9 +5896,14 @@ let tripUi = {
   dest: "",
   detour: "auto",
   roundTrip: true,
+  hoursPerDay: 8,
+  stopMinutes: 45,
   clients: null, // null: every client
-  picked: new Set(),
-  pickedFor: ""
+  skipped: new Set(), // pending services left out
+  added: new Set(), // other sites put in
+  choicesFor: "",
+  technicianId: "",
+  busy: ""
 };
 
 // trip-planner.html#ticket=<id> (from a ticket's "Plan a trip") starts
@@ -5871,7 +5928,8 @@ function tripStart() {
   return { lat: colombo.lat, lng: colombo.lng, label: "Colombo", approx: true };
 }
 
-function tripDestination() {
+function tripDestination(start) {
+  if (tripUi.dest === "around") return { lat: start.lat, lng: start.lng, label: `Around ${start.label}`, around: true };
   const [kind, ...rest] = String(tripUi.dest || "").split(":");
   const key = rest.join(":");
   if (kind === "place") {
@@ -5883,7 +5941,7 @@ function tripDestination() {
   const ticket = state.tickets.find((t) => t.id === key);
   if (!ticket) return { unresolved: true, label: "That job" };
   const label = `${ticket.number} · ${ticket.company || ticket.title}`;
-  if (Number.isFinite(Number(ticket.locationLat)) && ticket.locationLat !== null && ticket.locationLat !== "") {
+  if (ticket.locationLat !== null && ticket.locationLat !== "" && Number.isFinite(Number(ticket.locationLat))) {
     return { lat: Number(ticket.locationLat), lng: Number(ticket.locationLng), label, ticket };
   }
   const place = findPlaceInText([ticket.location, ticket.company, ticket.title].join(" "), tripPlaces());
@@ -5893,34 +5951,46 @@ function tripDestination() {
 
 function computeTrip() {
   const start = tripStart();
-  const dest = tripDestination();
+  const dest = tripDestination(start);
   if (!dest || dest.unresolved) return { start, dest };
 
-  const candidates = servicePlanRows().filter(
+  const wanted = (row) => row.lat !== null && (!tripUi.clients || tripUi.clients.has(row.client));
+  const plans = servicePlanRows().filter(
     (row) =>
       row.status === "pending" &&
       row.active &&
-      row.lat !== null &&
-      (!tripUi.clients || tripUi.clients.has(row.client)) &&
+      wanted(row) &&
       // The job itself, when it is a planned service, is the destination.
       !(dest.ticket && row.ticketId === dest.ticket.id)
   );
-  const maxDetourKm = tripUi.detour === "auto" ? autoDetourKm(start, dest) : Number(tripUi.detour);
-  const suggestions = nearbyStops(start, dest, candidates, { maxDetourKm });
+  const sites = siteVisitRows().filter(wanted);
+  const maxDetourKm =
+    tripUi.detour === "auto" ? (dest.around ? 60 : autoDetourKm(start, dest)) : Number(tripUi.detour);
+  const pending = nearbyStops(start, dest, plans, { maxDetourKm });
+  const others = nearbyStops(start, dest, sites, { maxDetourKm });
 
-  // A new trip starts with the best stops ticked; after that, the
-  // technician's own ticks stand.
-  const key = [tripUi.dest, maxDetourKm, tripUi.clients ? [...tripUi.clients].sort().join(",") : "all"].join("|");
-  if (tripUi.pickedFor !== key) {
-    tripUi.picked = new Set(suggestions.slice(0, TRIP_MAX_EXTRA_STOPS).map((s) => s.id));
-    tripUi.pickedFor = key;
+  // Pending services are in the trip unless unticked; other sites only
+  // when ticked. Those choices last until the destination or start changes
+  // (filters and distances don't wipe them).
+  const choicesKey = `${tripUi.dest}|${tripUi.start}`;
+  if (tripUi.choicesFor !== choicesKey) {
+    tripUi.skipped = new Set();
+    tripUi.added = new Set();
+    tripUi.choicesFor = choicesKey;
   }
+  const wantedStop = (s) => (s.kind === "plan" ? !tripUi.skipped.has(s.id) : tripUi.added.has(s.id));
+  const chosen = [...pending, ...others].filter(wantedStop).slice(0, TRIP_MAX_STOPS);
+  const pickedIds = new Set(chosen.map((s) => s.id));
 
-  const chosen = suggestions.filter((s) => tripUi.picked.has(s.id));
-  const jobStop = { ...dest, id: "destination", isJob: true };
-  const end = tripUi.roundTrip ? start : null;
-  const { order, km } = orderStops(start, [jobStop, ...chosen], end);
-  return { start, dest, maxDetourKm, suggestions, chosen, order, km, end, url: googleMapsTripUrl(start, order, end) };
+  const stops = dest.around ? chosen : [{ ...dest, id: "destination", isJob: true }, ...chosen];
+  const end = tripUi.roundTrip || dest.around ? start : null;
+  const { order, km } = orderStops(start, stops, end);
+  const days = splitTripIntoDays(start, order, order.length ? end : null, {
+    maxHoursPerDay: Number(tripUi.hoursPerDay),
+    stopMinutes: Number(tripUi.stopMinutes)
+  });
+  const stopHours = days.reduce((sum, d) => sum + d.stopHours, 0);
+  return { start, dest, maxDetourKm, pending, others, chosen, pickedIds, order, km, end, days, stopHours };
 }
 
 function tripStopLabel(stop) {
@@ -5933,9 +6003,35 @@ function tripStopActions(stop) {
       ? `<button class="secondary-button compact-button" type="button" data-trip-open-ticket="${escapeHtml(stop.ticket.id)}">Open job</button>`
       : "";
   }
-  return stop.ticketId
-    ? `<button class="secondary-button compact-button" type="button" data-trip-open-ticket="${escapeHtml(stop.ticketId)}">Open job</button>`
+  if (stop.kind === "plan" && stop.ticketId) {
+    return `<button class="secondary-button compact-button" type="button" data-trip-open-ticket="${escapeHtml(stop.ticketId)}">Open job</button>`;
+  }
+  return stop.kind === "site"
+    ? `<button class="secondary-button compact-button" type="button" data-start-site="${escapeHtml(stop.siteId)}">Start visit</button>`
     : `<button class="primary-button compact-button" type="button" data-start-planned="${escapeHtml(stop.id)}">Start service</button>`;
+}
+
+function tripStopDetails(stop) {
+  if (stop.isJob) return stop.around ? "" : "Your destination";
+  const bits = [escapeHtml(stop.place)];
+  if (stop.kind === "plan") bits.push(`${escapeHtml(stop.contractYear)} ${planStatusBadge(stop)}`);
+  else bits.push(stop.lastDone ? `last service ${escapeHtml(formatShortDate(stop.lastDone))}` : planStatusBadge(stop));
+  bits.push(`+${Math.round(stop.detourKm)} km`);
+  return bits.join(" · ");
+}
+
+function tripSuggestionList(rows, pickedIds) {
+  return `<ul class="trip-suggestions">${rows
+    .map(
+      (s) => `<li>
+        <label class="checkbox-row">
+          <input type="checkbox" data-trip-pick="${escapeHtml(s.id)}" ${pickedIds.has(s.id) ? "checked" : ""} />
+          <span><strong>${escapeHtml(s.client)}</strong> - ${escapeHtml(s.name)}
+            <span class="small muted">· ${tripStopDetails(s)}</span></span>
+        </label>
+      </li>`
+    )
+    .join("")}</ul>`;
 }
 
 function tripPlannerPage() {
@@ -5943,16 +6039,18 @@ function tripPlannerPage() {
   const trip = computeTrip();
   const openJobs = state.tickets.filter((t) => t.status === "new" || t.status === "in_progress");
   const clients = servicePlanClients();
-  const autoKm = trip.dest && !trip.dest.unresolved ? autoDetourKm(trip.start, trip.dest) : null;
+  const autoKm =
+    trip.dest && !trip.dest.unresolved ? (trip.dest.around ? 60 : autoDetourKm(trip.start, trip.dest)) : null;
+  const option = (value, label, current) =>
+    `<option value="${escapeHtml(value)}" ${String(value) === String(current) ? "selected" : ""}>${escapeHtml(label)}</option>`;
 
   const controls = `
-    <article class="panel trip-controls">
+    <article class="panel trip-controls print-hide">
       <h2>Plan a trip</h2>
       <form id="tripForm" class="trip-form">
         <fieldset class="trip-fieldset">
           <legend>Start from</legend>
-          <label class="radio-row"><input type="radio" name="tripStart" value="base" ${tripUi.start === "base" ? "checked" : ""} />
-            ${escapeHtml(tripStart().label && tripUi.start === "base" ? tripStart().label : "ABSL Office")}</label>
+          <label class="radio-row"><input type="radio" name="tripStart" value="base" ${tripUi.start === "base" ? "checked" : ""} /> ABSL Office</label>
           <label class="radio-row"><input type="radio" name="tripStart" value="gps" ${tripUi.start === "gps" ? "checked" : ""} /> My current location</label>
           ${tripUi.gpsError ? `<p class="small muted">${escapeHtml(tripUi.gpsError)}</p>` : ""}
         </fieldset>
@@ -5960,31 +6058,35 @@ function tripPlannerPage() {
         <label for="tripDest">Going to</label>
         <select id="tripDest" name="tripDest">
           <option value="">Choose a job or a town…</option>
+          <option value="around" ${tripUi.dest === "around" ? "selected" : ""}>Client sites around the start (no destination)</option>
           ${
             openJobs.length
               ? `<optgroup label="Open jobs">${openJobs
-                  .map(
-                    (t) => `<option value="ticket:${escapeHtml(t.id)}" ${tripUi.dest === `ticket:${t.id}` ? "selected" : ""}>${escapeHtml(
-                      `${t.number} · ${t.company || t.title}${t.location ? ` · ${t.location}` : ""}`
-                    )}</option>`
+                  .map((t) =>
+                    option(`ticket:${t.id}`, `${t.number} · ${t.company || t.title}${t.location ? ` · ${t.location}` : ""}`, tripUi.dest)
                   )
                   .join("")}</optgroup>`
               : ""
           }
-          <optgroup label="Towns">${tripPlaces()
-            .map((p) => `<option value="place:${escapeHtml(p.name)}" ${tripUi.dest === `place:${p.name}` ? "selected" : ""}>${escapeHtml(p.name)}</option>`)
-            .join("")}</optgroup>
+          <optgroup label="Towns">${tripPlaces().map((p) => option(`place:${p.name}`, p.name, tripUi.dest)).join("")}</optgroup>
         </select>
 
         <label for="tripDetour">Extra distance allowed for stops</label>
         <select id="tripDetour" name="tripDetour">
-          <option value="auto" ${tripUi.detour === "auto" ? "selected" : ""}>Auto${autoKm ? ` (about ${autoKm} km)` : ""}</option>
-          ${[20, 30, 50, 80, 120]
-            .map((km) => `<option value="${km}" ${String(tripUi.detour) === String(km) ? "selected" : ""}>Up to ${km} km</option>`)
-            .join("")}
+          ${option("auto", `Auto${autoKm ? ` (about ${autoKm} km)` : ""}`, tripUi.detour)}
+          ${[20, 30, 50, 80, 120].map((km) => option(km, `Up to ${km} km`, tripUi.detour)).join("")}
         </select>
 
         <label class="checkbox-row"><input type="checkbox" id="tripReturn" ${tripUi.roundTrip ? "checked" : ""} /> Come back to the start</label>
+
+        <div class="trip-pair">
+          <label>Driving day
+            <select id="tripHours">${[6, 8, 10, 12].map((h) => option(h, `${h} hours`, tripUi.hoursPerDay)).join("")}</select>
+          </label>
+          <label>Time at each stop
+            <select id="tripStopMinutes">${[30, 45, 60, 90].map((m) => option(m, `${m} min`, tripUi.stopMinutes)).join("")}</select>
+          </label>
+        </div>
 
         ${
           clients.length
@@ -6004,70 +6106,118 @@ function tripPlannerPage() {
 
   let result;
   if (!trip.dest) {
-    result = `<div class="empty-state">Choose where you're going. Pending services on the way will be suggested and put in the quickest order.</div>`;
+    result = `<div class="empty-state">Choose where you're going. Pending services and other client sites on the way will be suggested and put in the quickest order.</div>`;
   } else if (trip.dest.unresolved) {
     result = `<div class="notice">${escapeHtml(trip.dest.label)} has no map position and no known town in its location. Choose its town under <strong>Going to</strong>.</div>`;
+  } else if (!trip.order.length) {
+    result = `<div class="empty-state">Tick the client sites you want to visit below.</div>`;
   } else {
-    const points = [trip.start, ...trip.order, ...(trip.end ? [trip.end] : [])];
+    const technicians = state.technicians || [];
+    const assign =
+      isOfficeRole() && technicians.length
+        ? `<div class="trip-assign print-hide">
+            <label for="tripTechnician">Give these stops to</label>
+            <select id="tripTechnician">
+              <option value="">Choose a technician…</option>
+              ${technicians.map((t) => option(t.id, t.name, tripUi.technicianId)).join("")}
+            </select>
+            <button class="primary-button" type="button" id="tripAssignBtn" ${tripUi.busy ? "disabled" : ""}>${escapeHtml(tripUi.busy || "Assign the trip")}</button>
+            <p class="small muted">Each stop becomes a job for that technician, who is emailed as usual. The destination job is given to them too if nobody has it.</p>
+          </div>`
+        : "";
+
+    let number = 0;
+    const dayHtml = trip.days
+      .map((d) => {
+        const hours = Math.round((d.driveHours + d.stopHours) * 2) / 2;
+        const url = googleMapsTripUrl(d.from, d.stops, d.to);
+        const stopsHtml = d.stops
+          .map((p) => {
+            number += 1;
+            return `<li class="trip-stop ${p.isJob ? "trip-stop-job" : ""}">
+              <span class="trip-stop-number">${number}</span>
+              <div class="trip-stop-body">
+                <strong>${escapeHtml(tripStopLabel(p))}</strong>
+                <div class="small muted">${tripStopDetails(p)}</div>
+                ${p.address ? `<div class="small muted">${escapeHtml(p.address)}</div>` : ""}
+                ${contactLine(p)}
+                <div class="print-only small">Service call no: ____________ Time: ________ Signature: ____________</div>
+              </div>
+              <span class="print-hide">${tripStopActions(p)}</span>
+            </li>`;
+          })
+          .join("");
+        const last = d.stops[d.stops.length - 1];
+        return `
+          <li class="trip-day">
+            <div class="trip-day-title">
+              <strong>Day ${d.day}</strong>
+              <span class="small muted">about ${Math.round(d.km)} km · about ${hours} h</span>
+              <a class="secondary-button compact-button print-hide" href="${escapeHtml(url)}" target="_blank" rel="noopener">Open day ${d.day} in Google Maps</a>
+            </div>
+            <ol class="trip-itinerary">
+              <li class="trip-stop trip-stop-start"><span class="trip-stop-number">S</span>
+                <div><strong>${d.day === 1 ? "Start" : "From"}:</strong> ${escapeHtml(d.day === 1 ? trip.start.label : tripStopLabel(d.from))}
+                ${d.day === 1 && trip.start.approx ? `<span class="small muted">(approximate position)</span>` : ""}</div></li>
+              ${stopsHtml}
+              ${
+                d.to
+                  ? `<li class="trip-stop trip-stop-start"><span class="trip-stop-number">S</span><div><strong>Back to start:</strong> ${escapeHtml(trip.start.label)}</div></li>`
+                  : last
+                    ? `<li class="trip-night small muted">${d.day < trip.days.length ? `Overnight near ${escapeHtml(last.place || last.label || "")}` : "End of trip"}</li>`
+                    : ""
+              }
+            </ol>
+          </li>`;
+      })
+      .join("");
+
     result = `
       <div class="trip-summary">
         <div>
           <strong>${trip.order.length} stop${trip.order.length === 1 ? "" : "s"}</strong>
-          · about ${Math.round(trip.km)} km · about ${tripHours(trip.km)} h driving
+          · ${trip.days.length} day${trip.days.length === 1 ? "" : "s"}
+          · about ${Math.round(trip.km)} km · about ${tripHours(trip.km)} h driving + ${Math.round(trip.stopHours * 2) / 2} h at stops
           <p class="small muted">Estimated from straight-line distances. Google Maps shows the real roads and times.</p>
         </div>
-        <a class="primary-button" href="${escapeHtml(trip.url)}" target="_blank" rel="noopener">Open route in Google Maps</a>
+        <div class="action-row print-hide">
+          ${
+            trip.days.length === 1
+              ? `<a class="primary-button" href="${escapeHtml(googleMapsTripUrl(trip.days[0].from, trip.days[0].stops, trip.days[0].to))}" target="_blank" rel="noopener">Open route in Google Maps</a>`
+              : ""
+          }
+          <button class="secondary-button" type="button" id="tripShareBtn">Share trip</button>
+          <button class="secondary-button" type="button" id="tripPrintBtn">Print trip sheet</button>
+        </div>
       </div>
-      <div id="tripMap" class="trip-map" role="img" aria-label="Map of the trip"></div>
-      <ol class="trip-itinerary">
-        ${points
-          .map((p, i) => {
-            const isStart = i === 0;
-            const isEnd = trip.end && i === points.length - 1;
-            if (isStart || isEnd) {
-              return `<li class="trip-stop trip-stop-start"><span class="trip-stop-number">S</span>
-                <div><strong>${isStart ? "Start" : "Back to start"}:</strong> ${escapeHtml(p.label)}
-                ${p.approx ? `<span class="small muted">(approximate position)</span>` : ""}</div></li>`;
-            }
-            return `<li class="trip-stop ${p.isJob ? "trip-stop-job" : ""}">
-              <span class="trip-stop-number">${i}</span>
-              <div class="trip-stop-body">
-                <strong>${escapeHtml(tripStopLabel(p))}</strong>
-                <div class="small muted">
-                  ${p.isJob ? "Your destination" : `${escapeHtml(p.place)} · ${escapeHtml(p.contractYear)} ${planStatusBadge(p)} · +${Math.round(p.detourKm)} km`}
-                </div>
-              </div>
-              ${tripStopActions(p)}
-            </li>`;
-          })
-          .join("")}
-      </ol>`;
+      ${assign}
+      <div id="tripMap" class="trip-map print-hide" role="img" aria-label="Map of the trip"></div>
+      <ol class="trip-days">${dayHtml}</ol>`;
   }
 
-  const suggestionList =
+  const lists =
     trip.dest && !trip.dest.unresolved
       ? `
-      <article class="panel">
+      <article class="panel print-hide">
         <div class="panel-title">
           <h2>Pending services on the way</h2>
-          <span class="badge badge-muted">${trip.suggestions.length} within ${Math.round(trip.maxDetourKm)} km</span>
+          <span class="badge badge-muted">${trip.pending.length} within ${Math.round(trip.maxDetourKm)} km</span>
         </div>
-        <p class="small muted">Ticked ones are in the trip (up to ${TRIP_MAX_EXTRA_STOPS}, the most Google Maps can take with your job). Overdue ones come first.</p>
         ${
-          trip.suggestions.length
-            ? `<ul class="trip-suggestions">${trip.suggestions
-                .map(
-                  (s) => `<li>
-                    <label class="checkbox-row">
-                      <input type="checkbox" data-trip-pick="${escapeHtml(s.id)}" ${tripUi.picked.has(s.id) ? "checked" : ""} />
-                      <span><strong>${escapeHtml(s.client)}</strong> - ${escapeHtml(s.name)}
-                        <span class="small muted">· ${escapeHtml(s.place)} · ${escapeHtml(s.contractYear)} · +${Math.round(s.detourKm)} km</span>
-                        ${planStatusBadge(s)}</span>
-                    </label>
-                  </li>`
-                )
-                .join("")}</ul>`
-            : `<div class="empty-state">No pending services within ${Math.round(trip.maxDetourKm)} km of this trip. Allow more extra distance to look further.</div>`
+          trip.pending.length
+            ? `<p class="small muted">Ticked ones are in the trip. Overdue ones come first.</p>${tripSuggestionList(trip.pending, trip.pickedIds)}`
+            : `<div class="empty-state">No services marked due near this trip. Mark them on the Service Plan page, or add other client sites below.</div>`
+        }
+      </article>
+      <article class="panel print-hide">
+        <div class="panel-title">
+          <h2>Other client sites on the way</h2>
+          <span class="badge badge-muted">${trip.others.length} with nothing due</span>
+        </div>
+        ${
+          trip.others.length
+            ? `<p class="small muted">Nothing is due at these. Tick any you want to call at (a check-up, a delivery); it's recorded as a visit.</p>${tripSuggestionList(trip.others, trip.pickedIds)}`
+            : `<div class="empty-state">No other client sites within ${Math.round(trip.maxDetourKm)} km. Allow more extra distance to look further.</div>`
         }
       </article>`
       : "";
@@ -6076,24 +6226,27 @@ function tripPlannerPage() {
     ${unavailable}
     <section class="trip-layout">
       ${controls}
-      <article class="panel trip-result">${result}</article>
+      <article class="panel trip-result">
+        <h2 class="print-only">${escapeHtml(trip.dest && !trip.dest.unresolved ? `Trip: ${trip.dest.label}` : "Trip")} · ${escapeHtml(formatLongDate(new Date()))}</h2>
+        ${result}
+      </article>
     </section>
-    ${suggestionList}
+    ${lists}
   `;
 }
 
 function drawTripMap() {
   const trip = computeTrip();
-  if (!trip.dest || trip.dest.unresolved) return;
+  if (!trip.dest || trip.dest.unresolved || !trip.order.length) return;
   const map = newLeafletMap("tripMap");
   if (!map) return;
 
   const points = [trip.start, ...trip.order, ...(trip.end ? [trip.end] : [])];
   L.polyline(points.map((p) => [p.lat, p.lng]), { color: "#0284c7", weight: 3, opacity: 0.85, dashArray: "6 8" }).addTo(map);
-  trip.suggestions
-    .filter((s) => !tripUi.picked.has(s.id))
+  [...trip.pending, ...trip.others]
+    .filter((s) => !trip.pickedIds.has(s.id))
     .forEach((s) =>
-      L.circleMarker([s.lat, s.lng], { radius: 5, color: "#94a3b8", weight: 2, fillOpacity: 0.6 })
+      L.circleMarker([s.lat, s.lng], { radius: 5, color: s.kind === "plan" ? "#2563eb" : "#94a3b8", weight: 2, fillOpacity: 0.5 })
         .addTo(map)
         .bindTooltip(escapeHtml(`Not in the trip: ${s.client} - ${s.name}`))
     );
@@ -6101,7 +6254,7 @@ function drawTripMap() {
     .addTo(map)
     .bindTooltip(escapeHtml(`Start: ${trip.start.label}`));
   trip.order.forEach((stop, i) =>
-    L.marker([stop.lat, stop.lng], { icon: mapPin(String(i + 1), stop.isJob ? "job" : "stop") })
+    L.marker([stop.lat, stop.lng], { icon: mapPin(String(i + 1), stop.isJob ? "job" : stop.kind === "site" ? "site" : "stop") })
       .addTo(map)
       .bindTooltip(escapeHtml(`${i + 1}. ${tripStopLabel(stop)}`))
   );
@@ -6121,7 +6274,7 @@ function useMyLocation() {
     (position) => {
       tripUi.gps = { lat: position.coords.latitude, lng: position.coords.longitude };
       tripUi.gpsError = "";
-      tripUi.pickedFor = "";
+      tripUi.choicesFor = "";
       render();
     },
     () => {
@@ -6133,13 +6286,16 @@ function useMyLocation() {
   );
 }
 
-// A planned service becomes a normal Service job (start_planned_service,
-// 0039), opened on the dashboard ready for In Progress and Resolved.
-async function startPlannedService(planId, button) {
-  if (!supabaseClient || !isUuid(planId)) return;
+// A stop becomes a normal Service job (0039/0040), opened on the
+// dashboard ready for In Progress and Resolved.
+async function startTripStop(kind, id, button) {
+  if (!supabaseClient || !isUuid(id)) return;
   if (button) button.disabled = true;
 
-  const { data, error } = await supabaseClient.rpc("start_planned_service", { p_service_id: planId });
+  const { data, error } =
+    kind === "site"
+      ? await supabaseClient.rpc("start_site_visit", { p_site_id: id })
+      : await supabaseClient.rpc("start_planned_service", { p_service_id: id });
   if (error) {
     if (button) button.disabled = false;
     showToast(friendlyError(error.message), "error");
@@ -6157,13 +6313,80 @@ function openJobOnDashboard(ticketId) {
   window.location.href = `${dashboardRouteForRole()}.html`;
 }
 
+// An operator hands the whole trip to one technician: every stop becomes
+// a job assigned to them (emailed as usual), and the destination job too
+// when nobody has it yet.
+async function assignTripToTechnician() {
+  const trip = computeTrip();
+  const technician = (state.technicians || []).find((t) => t.id === tripUi.technicianId);
+  if (!technician) {
+    showToast("Choose the technician first.", "warning");
+    return;
+  }
+  const stops = trip.order.filter((s) => !s.isJob);
+  const job = trip.order.find((s) => s.isJob && s.ticket);
+  const confirmed = await showConfirm(
+    `Give ${stops.length} stop${stops.length === 1 ? "" : "s"}${job && !job.ticket.assignedTechnicianId ? " and the destination job" : ""} to ${technician.name}? Each becomes a job for them and they're emailed.`,
+    "Assign the trip"
+  );
+  if (!confirmed) return;
+
+  let done = 0;
+  const failed = [];
+  for (const stop of stops) {
+    tripUi.busy = `Assigning ${done + 1} of ${stops.length}…`;
+    render();
+    const { error } =
+      stop.kind === "site"
+        ? await supabaseClient.rpc("start_site_visit", { p_site_id: stop.siteId, p_technician_id: technician.id })
+        : await supabaseClient.rpc("start_planned_service", { p_service_id: stop.id, p_technician_id: technician.id });
+    if (error) failed.push(`${stop.name}: ${friendlyError(error.message)}`);
+    else done += 1;
+  }
+  if (job && !job.ticket.assignedTechnicianId) {
+    const { error } = await supabaseClient.rpc("reassign_ticket", {
+      p_ticket_id: job.ticket.id,
+      p_technician_id: technician.id,
+      p_reason: "Planned trip"
+    });
+    if (error) failed.push(`${job.ticket.number}: ${friendlyError(error.message)}`);
+  }
+
+  tripUi.busy = "";
+  await Promise.all([loadServicePlan(), loadRealTickets({ shouldRender: false })]);
+  render();
+  if (failed.length) showToast(`${done} assigned. Not assigned: ${failed.join("; ")}`, "warning");
+  else showToast(`Trip given to ${technician.name}: ${done} job${done === 1 ? "" : "s"}, emailed to them.`, "success");
+}
+
+async function shareTrip() {
+  const trip = computeTrip();
+  if (!trip.days || !trip.days.length) return;
+  const describe = (s) =>
+    [tripStopLabel(s), s.place && !s.isJob ? `(${s.place})` : "", s.contactPhone ? `- call ${s.contactName || ""} ${s.contactPhone}`.trim() : ""]
+      .filter(Boolean)
+      .join(" ");
+  const text = tripShareText(trip.days, { title: `ABSL trip: ${trip.dest.label} (${formatShortDate(new Date())})`, describe });
+  try {
+    if (navigator.share) {
+      await navigator.share({ title: "ABSL trip", text });
+      return;
+    }
+    await navigator.clipboard.writeText(text);
+    showToast("Trip copied - paste it into WhatsApp or a message.", "success");
+  } catch (err) {
+    if (err && err.name === "AbortError") return;
+    showToast("Could not share the trip from this browser.", "warning");
+  }
+}
+
 function bindTripPlannerEvents() {
   const form = document.querySelector("#tripForm");
   if (form) {
     form.querySelectorAll('input[name="tripStart"]').forEach((input) => {
       input.onchange = () => {
         tripUi.start = input.value;
-        tripUi.pickedFor = "";
+        tripUi.choicesFor = "";
         if (input.value === "gps") useMyLocation();
         else {
           tripUi.gpsError = "";
@@ -6171,16 +6394,17 @@ function bindTripPlannerEvents() {
         }
       };
     });
-    const dest = form.querySelector("#tripDest");
-    if (dest) dest.onchange = () => {
-      tripUi.dest = dest.value;
-      render();
+    const bindSelect = (selector, field) => {
+      const el = form.querySelector(selector);
+      if (el) el.onchange = () => {
+        tripUi[field] = el.value;
+        render();
+      };
     };
-    const detour = form.querySelector("#tripDetour");
-    if (detour) detour.onchange = () => {
-      tripUi.detour = detour.value;
-      render();
-    };
+    bindSelect("#tripDest", "dest");
+    bindSelect("#tripDetour", "detour");
+    bindSelect("#tripHours", "hoursPerDay");
+    bindSelect("#tripStopMinutes", "stopMinutes");
     const back = form.querySelector("#tripReturn");
     if (back) back.onchange = () => {
       tripUi.roundTrip = back.checked;
@@ -6200,27 +6424,43 @@ function bindTripPlannerEvents() {
 
   document.querySelectorAll("[data-trip-pick]").forEach((box) => {
     box.onchange = () => {
-      if (box.checked && tripUi.picked.size >= TRIP_MAX_EXTRA_STOPS) {
+      const id = box.dataset.tripPick;
+      const isSite = id.startsWith("site:");
+      if (box.checked && computeTrip().chosen.length >= TRIP_MAX_STOPS) {
         box.checked = false;
-        showToast(`Google Maps takes up to ${TRIP_MAX_EXTRA_STOPS} stops besides your job. Untick one first.`, "warning");
+        showToast(`A trip can take up to ${TRIP_MAX_STOPS} stops. Untick one first.`, "warning");
         return;
       }
-      if (box.checked) tripUi.picked.add(box.dataset.tripPick);
-      else tripUi.picked.delete(box.dataset.tripPick);
+      if (isSite) box.checked ? tripUi.added.add(id) : tripUi.added.delete(id);
+      else box.checked ? tripUi.skipped.delete(id) : tripUi.skipped.add(id);
       render();
     };
   });
 
   document.querySelectorAll("[data-start-planned]").forEach((button) => {
-    button.onclick = () => startPlannedService(button.dataset.startPlanned, button);
+    button.onclick = () => startTripStop("plan", button.dataset.startPlanned, button);
+  });
+  document.querySelectorAll("[data-start-site]").forEach((button) => {
+    button.onclick = () => startTripStop("site", button.dataset.startSite, button);
   });
   document.querySelectorAll("[data-trip-open-ticket]").forEach((button) => {
     button.onclick = () => openJobOnDashboard(button.dataset.tripOpenTicket);
   });
+  const technician = document.querySelector("#tripTechnician");
+  if (technician) technician.onchange = () => {
+    tripUi.technicianId = technician.value;
+  };
+  const assign = document.querySelector("#tripAssignBtn");
+  if (assign) assign.onclick = assignTripToTechnician;
+  const share = document.querySelector("#tripShareBtn");
+  if (share) share.onclick = shareTrip;
+  const print = document.querySelector("#tripPrintBtn");
+  if (print) print.onclick = () => window.print();
 }
 
 // --- Service Plan (operators and the CEO) -----------------------------
 let planUi = { client: "", status: "pending", year: "", search: "" };
+let siteUi = { client: "", search: "" };
 
 function filteredPlanRows() {
   const search = planUi.search.trim().toLowerCase();
@@ -6234,6 +6474,14 @@ function filteredPlanRows() {
     .sort((a, b) => Number(b.overdue) - Number(a.overdue) || a.client.localeCompare(b.client) || a.name.localeCompare(b.name));
 }
 
+function filteredSites() {
+  const search = siteUi.search.trim().toLowerCase();
+  return state.clientSites
+    .filter((s) => !s.is_base)
+    .filter((s) => !siteUi.client || s.client === siteUi.client)
+    .filter((s) => !search || [s.client, s.name, s.place, s.address, s.device_serial, s.contact_name, s.contact_phone].join(" ").toLowerCase().includes(search));
+}
+
 function servicePlanPage() {
   const unavailable = servicePlanUnavailable();
   const all = servicePlanRows();
@@ -6241,10 +6489,13 @@ function servicePlanPage() {
   const clients = servicePlanClients();
   const years = [...new Set(all.map((r) => r.contractYear))].sort();
   const base = state.clientSites.find((s) => s.is_base);
-  const sites = state.clientSites.filter((s) => !s.is_base);
+  const sites = filteredSites();
+  const siteCount = state.clientSites.filter((s) => !s.is_base).length;
+  const last = lastServiceBySite();
   const count = (fn) => all.filter(fn).length;
   const option = (value, label, current) =>
     `<option value="${escapeHtml(value)}" ${value === current ? "selected" : ""}>${escapeHtml(label)}</option>`;
+  const nothingDue = !all.some((r) => r.status === "pending");
 
   return `
     ${unavailable}
@@ -6252,7 +6503,7 @@ function servicePlanPage() {
       <article class="stat-card"><span>Pending</span><strong>${count((r) => r.status === "pending")}</strong></article>
       <article class="stat-card"><span>Overdue</span><strong>${count((r) => r.overdue)}</strong></article>
       <article class="stat-card"><span>Done</span><strong>${count((r) => r.status === "done")}</strong></article>
-      <article class="stat-card"><span>Client sites</span><strong>${sites.length}</strong></article>
+      <article class="stat-card"><span>Client sites</span><strong>${siteCount}</strong></article>
     </section>
 
     ${
@@ -6266,11 +6517,16 @@ function servicePlanPage() {
         <h2>Planned services</h2>
         <div class="action-row">
           <a class="primary-button" href="trip-planner.html">Plan a trip</a>
+          <button class="secondary-button" type="button" id="planImportBtn">Import from Excel</button>
           <button class="secondary-button" type="button" id="planMarkDueBtn">Mark sites due</button>
-          <button class="secondary-button" type="button" id="planAddSiteBtn">Add site</button>
           <button class="secondary-button" type="button" id="planExcelBtn">Download Excel</button>
         </div>
       </div>
+      ${
+        nothingDue
+          ? `<div class="notice">No services are marked due yet. Import your updated service sheet (<strong>Import from Excel</strong>; download the template from the sites list below), or use <strong>Mark sites due</strong> for a client's contract year.</div>`
+          : ""
+      }
       <form id="planFilters" class="plan-filters">
         <label>Client<select name="client">${option("", "All clients", planUi.client)}${clients.map((c) => option(c, c, planUi.client)).join("")}</select></label>
         <label>Status<select name="status">
@@ -6279,11 +6535,15 @@ function servicePlanPage() {
         <label>Contract year<select name="year">${option("", "All years", planUi.year)}${years.map((y) => option(y, y, planUi.year)).join("")}</select></label>
         <label>Search<input name="search" type="search" value="${escapeHtml(planUi.search)}" placeholder="Site, town, serial or service call" /></label>
       </form>
-      <div id="planMap" class="trip-map plan-map" role="img" aria-label="Map of the services listed"></div>
-      <p class="small muted">${rows.length} service${rows.length === 1 ? "" : "s"} listed. Positions are town-level unless a site's exact position has been set.</p>
+      <div id="planMap" class="trip-map plan-map" role="img" aria-label="Map of client sites"></div>
+      <p class="small muted map-legend">
+        <span class="legend-dot is-overdue"></span> Overdue <span class="legend-dot is-pending"></span> Pending
+        <span class="legend-dot is-done"></span> Done <span class="legend-dot is-none"></span> Nothing due
+        · ${rows.length} service${rows.length === 1 ? "" : "s"} listed. Positions are town-level unless a site's exact position has been set.
+      </p>
       <div class="table-scroll">
         <table class="plan-table">
-          <thead><tr><th>Client</th><th>Site</th><th>Town</th><th>Year</th><th>Due</th><th>Status</th><th>Service call</th><th>Done</th><th></th></tr></thead>
+          <thead><tr><th>Client</th><th>Site</th><th>Town</th><th>Year</th><th>Visit</th><th>Due</th><th>Status</th><th>Service call</th><th>Done</th><th></th></tr></thead>
           <tbody>
             ${
               rows.length
@@ -6294,6 +6554,7 @@ function servicePlanPage() {
                   <td><strong>${escapeHtml(r.name)}</strong>${r.serial ? `<div class="small muted">Serial ${escapeHtml(r.serial)}</div>` : ""}</td>
                   <td>${escapeHtml(r.place)}</td>
                   <td>${escapeHtml(r.contractYear)}</td>
+                  <td>${escapeHtml(r.visit)}</td>
                   <td>${r.dueBy ? escapeHtml(formatShortDate(r.dueBy)) : "—"}</td>
                   <td>${planStatusBadge(r)}</td>
                   <td>${escapeHtml(r.serviceCall || "—")}</td>
@@ -6310,7 +6571,7 @@ function servicePlanPage() {
                 </tr>`
                     )
                     .join("")
-                : `<tr><td colspan="9"><div class="empty-state">Nothing matches these filters.</div></td></tr>`
+                : `<tr><td colspan="10"><div class="empty-state">Nothing matches these filters.</div></td></tr>`
             }
           </tbody>
         </table>
@@ -6318,44 +6579,66 @@ function servicePlanPage() {
     </section>
 
     <section class="panel">
-      <details>
-        <summary><strong>Client sites (${sites.length})</strong> <span class="small muted">— addresses, serial numbers and map positions</span></summary>
-        <div class="table-scroll">
-          <table class="plan-table">
-            <thead><tr><th>Client</th><th>Site</th><th>Town</th><th>Position</th><th>Serial</th><th></th></tr></thead>
-            <tbody>
-              ${[base, ...sites]
-                .filter(Boolean)
-                .map(
-                  (s) => `<tr ${s.active === false ? `class="is-inactive"` : ""}>
-                <td>${escapeHtml(s.client)}${s.is_base ? ` <span class="badge badge-ok">Trips start here</span>` : ""}</td>
+      <div class="panel-title">
+        <h2>Client sites</h2>
+        <div class="action-row">
+          <button class="secondary-button" type="button" id="planAddSiteBtn">Add site</button>
+          <button class="secondary-button" type="button" id="planTemplateBtn">Download template</button>
+        </div>
+      </div>
+      <form id="siteFilters" class="plan-filters">
+        <label>Client<select name="client">${option("", "All clients", siteUi.client)}${clients.map((c) => option(c, c, siteUi.client)).join("")}</select></label>
+        <label>Search<input name="search" type="search" value="${escapeHtml(siteUi.search)}" placeholder="Site, town, address, serial or contact" /></label>
+      </form>
+      <p class="small muted">${sites.length} of ${siteCount} sites. The template is this list as an Excel sheet: fill in the service columns and import it.</p>
+      <div class="table-scroll">
+        <table class="plan-table">
+          <thead><tr><th>Client</th><th>Site</th><th>Town</th><th>Contact</th><th>Last service</th><th>Position</th><th>Serial</th><th></th></tr></thead>
+          <tbody>
+            ${[...(base && !siteUi.client && !siteUi.search ? [base] : []), ...sites]
+              .map((s) => {
+                const lastDone = last.get(s.id);
+                return `<tr ${s.active === false ? `class="is-inactive"` : ""}>
+                <td>${escapeHtml(s.client)}${s.is_base ? ` <span class="badge badge-ok">Trips start here</span>` : ""}${s.active === false ? ` <span class="badge badge-closed">Inactive</span>` : ""}</td>
                 <td><strong>${escapeHtml(s.name)}</strong>${s.address ? `<div class="small muted">${escapeHtml(s.address)}</div>` : ""}</td>
                 <td>${escapeHtml(s.place || "")}</td>
+                <td>${s.contact_name ? escapeHtml(s.contact_name) : ""}${s.contact_phone ? `<div class="small"><a href="tel:${escapeHtml(telHref(s.contact_phone))}">${escapeHtml(s.contact_phone)}</a></div>` : ""}</td>
+                <td>${lastDone ? `${escapeHtml(formatShortDate(lastDone.done_at))}${lastDone.service_call_number ? `<div class="small muted">SC ${escapeHtml(lastDone.service_call_number)}</div>` : ""}` : "—"}</td>
                 <td>${s.lat === null ? "—" : `${s.location_exact ? "Exact" : "Town"} <a class="small" href="https://www.google.com/maps?q=${Number(s.lat)},${Number(s.lng)}" target="_blank" rel="noopener">view</a>`}</td>
                 <td>${escapeHtml(s.device_serial || "")}</td>
                 <td><button class="link-button" type="button" data-edit-site="${escapeHtml(s.id)}">Edit</button></td>
-              </tr>`
-                )
-                .join("")}
-            </tbody>
-          </table>
-        </div>
-      </details>
+              </tr>`;
+              })
+              .join("")}
+          </tbody>
+        </table>
+      </div>
     </section>
   `;
 }
 
+// Every site of the chosen client, coloured by what's due there.
 function drawPlanMap() {
-  const rows = filteredPlanRows().filter((r) => r.lat !== null);
   const map = newLeafletMap("planMap");
   if (!map) return;
-  const colour = (r) => (r.status === "done" ? "#059669" : r.status === "skipped" ? "#94a3b8" : r.overdue ? "#dc2626" : "#2563eb");
-  rows.forEach((r) =>
-    L.circleMarker([r.lat, r.lng], { radius: 6, color: colour(r), weight: 2, fillOpacity: 0.55 })
+  const plans = servicePlanRows();
+  const today = localDateKey(new Date());
+  const statusOf = (siteId) => {
+    const own = plans.filter((p) => p.siteId === siteId);
+    if (own.some((p) => p.status === "pending" && p.dueBy && p.dueBy < today)) return "overdue";
+    if (own.some((p) => p.status === "pending")) return "pending";
+    if (own.some((p) => p.status === "done")) return "done";
+    return "none";
+  };
+  const colour = { overdue: "#dc2626", pending: "#2563eb", done: "#059669", none: "#94a3b8" };
+  const sites = state.clientSites.filter((s) => !s.is_base && s.lat !== null && (!planUi.client || s.client === planUi.client));
+  sites.forEach((s) => {
+    const status = statusOf(s.id);
+    L.circleMarker([Number(s.lat), Number(s.lng)], { radius: status === "none" ? 4 : 6, color: colour[status], weight: 2, fillOpacity: 0.55 })
       .addTo(map)
-      .bindTooltip(escapeHtml(`${r.client} - ${r.name} (${r.place}) · ${r.overdue ? "overdue" : r.status}`))
-  );
-  if (rows.length) map.fitBounds(L.latLngBounds(rows.map((r) => [r.lat, r.lng])).pad(0.1));
+      .bindTooltip(escapeHtml(`${s.client} - ${s.name} (${s.place || ""}) · ${status === "none" ? "nothing due" : status}`));
+  });
+  if (sites.length) map.fitBounds(L.latLngBounds(sites.map((s) => [Number(s.lat), Number(s.lng)])).pad(0.1));
   else map.setView([7.85, 80.7], 7);
 }
 
@@ -6384,11 +6667,12 @@ function openPlanModal(html, onSubmit) {
       event.preventDefault();
       const submit = form.querySelector("button[type=submit]");
       if (submit) submit.disabled = true;
-      const ok = await onSubmit(new FormData(form));
+      const ok = await onSubmit(new FormData(form), form);
       if (ok) close();
       else if (submit) submit.disabled = false;
     };
   }
+  return card;
 }
 
 function openMarkDoneModal(planId) {
@@ -6447,9 +6731,13 @@ function openSiteModal(siteId) {
        ${
          site?.is_base
            ? ""
-           : `<label for="siteSerial">Device serial number</label>
+           : `<label for="siteContactName">Contact person</label>
+              <input id="siteContactName" name="contactName" maxlength="80" value="${v("contact_name")}" placeholder="Who to call before going" />
+              <label for="siteContactPhone">Contact phone</label>
+              <input id="siteContactPhone" name="contactPhone" maxlength="20" inputmode="tel" value="${v("contact_phone")}" placeholder="07X XXX XXXX" />
+              <label for="siteSerial">Device serial number</label>
               <input id="siteSerial" name="serial" maxlength="80" value="${v("device_serial")}" />
-              <label class="checkbox-row"><input type="checkbox" name="active" ${site?.active === false ? "" : "checked"} /> Active (include in trips)</label>`
+              <label class="checkbox-row"><input type="checkbox" name="active" ${site?.active === false ? "" : "checked"} /> Active (ABSL services this site; include it in trips)</label>`
        }
        <div class="action-row">
          <button class="secondary-button" type="button" data-modal-cancel>Cancel</button>
@@ -6461,6 +6749,11 @@ function openSiteModal(siteId) {
       let position = typed ? parseLatLng(typed) : null;
       if (typed && !position) {
         showToast("That position isn't in Sri Lanka or couldn't be read. Paste two numbers like 6.9271, 79.8612.", "warning");
+        return false;
+      }
+      const phone = String(form.get("contactPhone") || "").trim();
+      if (phone && !isValidPhone(phone)) {
+        showToast("That contact phone number doesn't look right.", "warning");
         return false;
       }
       const place = String(form.get("place") || "").trim();
@@ -6479,6 +6772,8 @@ function openSiteModal(siteId) {
       if (!site?.is_base) {
         changes.client = String(form.get("client") || "").trim();
         changes.device_serial = String(form.get("serial") || "").trim() || null;
+        changes.contact_name = String(form.get("contactName") || "").trim() || null;
+        changes.contact_phone = phone || null;
         changes.active = Boolean(form.get("active"));
       }
       const query = site
@@ -6503,12 +6798,16 @@ function openMarkDueModal() {
   const clients = servicePlanClients();
   openPlanModal(
     `<h2>Mark sites due</h2>
-     <p class="muted">Adds a pending service for every active site of a client. Sites that already have one for that year are left as they are.</p>
+     <p class="muted">Adds a pending service for every active site of a client. Sites that already have that visit for that year are left as they are.</p>
      <form class="plan-form">
        <label for="dueClient">Client</label>
        <select id="dueClient" name="client" required>${clients.map((c) => `<option value="${escapeHtml(c)}">${escapeHtml(c)}</option>`).join("")}</select>
        <label for="dueYear">Contract year</label>
-       <input id="dueYear" name="year" required maxlength="20" placeholder="e.g. 2026/27" pattern="\\d{4}/\\d{2}" />
+       <input id="dueYear" name="year" required maxlength="20" value="${escapeHtml(currentContractYear())}" pattern="\\d{4}/\\d{2}" />
+       <label for="dueVisit">Visit</label>
+       <input id="dueVisit" name="visit" required maxlength="40" value="Service" list="dueVisits" />
+       <datalist id="dueVisits"><option value="Service"></option><option value="1st service"></option><option value="2nd service"></option></datalist>
+       <p class="small muted">Seylan has two services a year: mark "1st service" now and "2nd service" later.</p>
        <label for="dueBy">Due by (optional)</label>
        <input id="dueBy" name="dueBy" type="date" />
        <div class="action-row">
@@ -6518,8 +6817,13 @@ function openMarkDueModal() {
      </form>`,
     async (form) => {
       const client = String(form.get("client") || "");
-      const year = String(form.get("year") || "").trim();
+      const year = normalizeContractYear(form.get("year"));
+      const visit = String(form.get("visit") || "").trim() || "Service";
       const dueBy = String(form.get("dueBy") || "") || null;
+      if (!year) {
+        showToast("Write the contract year like 2026/27.", "warning");
+        return false;
+      }
       const siteIds = state.clientSites.filter((s) => s.client === client && !s.is_base && s.active !== false).map((s) => s.id);
       if (!siteIds.length) {
         showToast("That client has no active sites.", "warning");
@@ -6528,20 +6832,31 @@ function openMarkDueModal() {
       const { error } = await supabaseClient
         .from("planned_services")
         .upsert(
-          siteIds.map((siteId) => ({ site_id: siteId, contract_year: year, visit: "Service", due_by: dueBy })),
+          siteIds.map((siteId) => ({ site_id: siteId, contract_year: year, visit, due_by: dueBy })),
           { onConflict: "site_id,contract_year,visit", ignoreDuplicates: true }
         );
       if (error) {
         showToast(friendlyError(error.message), "error");
         return false;
       }
-      showToast(`${client}: ${siteIds.length} site${siteIds.length === 1 ? "" : "s"} marked due for ${year}.`, "success");
+      showToast(`${client}: ${siteIds.length} site${siteIds.length === 1 ? "" : "s"} marked due for ${visit} ${year}.`, "success");
       planUi = { ...planUi, client, year, status: "pending" };
       await loadServicePlan();
       render();
       return true;
     }
   );
+}
+
+// --- Excel: the plan, the template, and importing an updated sheet ----
+const PLAN_TEMPLATE_HEADINGS = [
+  "Client", "Site", "Town", "Address", "Device serial", "Contact name", "Contact phone",
+  "Contract year", "Visit", "Status", "Date done", "Service call", "Due by"
+];
+
+async function downloadWorkbook(workbook, fileName) {
+  const buffer = await workbook.xlsx.writeBuffer();
+  downloadBlob(new Blob([buffer], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" }), fileName);
 }
 
 async function downloadServicePlanExcel(button) {
@@ -6559,9 +6874,9 @@ async function downloadServicePlanExcel(button) {
       { header: "Client", key: "client", width: 28 },
       { header: "Site", key: "name", width: 34 },
       { header: "Town", key: "place", width: 18 },
-      { header: "Region", key: "region", width: 16 },
       { header: "Device serial", key: "serial", width: 22 },
       { header: "Contract year", key: "contractYear", width: 14 },
+      { header: "Visit", key: "visit", width: 16 },
       { header: "Due by", key: "dueBy", width: 13 },
       { header: "Status", key: "status", width: 11 },
       { header: "Service call", key: "serviceCall", width: 14 },
@@ -6577,11 +6892,7 @@ async function downloadServicePlanExcel(button) {
         doneAt: r.doneAt ? formatShortDate(r.doneAt) : ""
       })
     );
-    const buffer = await workbook.xlsx.writeBuffer();
-    downloadBlob(
-      new Blob([buffer], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" }),
-      `ABSL Service Plan ${localDateKey(new Date())}.xlsx`
-    );
+    await downloadWorkbook(workbook, `ABSL Service Plan ${localDateKey(new Date())}.xlsx`);
   } catch (err) {
     console.error("Service plan export failed", err);
     showToast("Could not create the Excel file. Please try again.", "error");
@@ -6590,24 +6901,250 @@ async function downloadServicePlanExcel(button) {
   }
 }
 
+// The sites as an import sheet: fill in the service columns, import back.
+async function downloadPlanTemplate(button) {
+  button.disabled = true;
+  try {
+    const ExcelJS = await loadExcelJs();
+    const workbook = new ExcelJS.Workbook();
+    const sheet = workbook.addWorksheet("Service Plan");
+    sheet.columns = PLAN_TEMPLATE_HEADINGS.map((header) => ({ header, width: header === "Site" || header === "Address" ? 34 : 16 }));
+    sheet.getRow(1).font = { bold: true };
+    sheet.views = [{ state: "frozen", ySplit: 1 }];
+    filteredSites()
+      .filter((s) => s.active !== false)
+      .forEach((s) =>
+        sheet.addRow([s.client, s.name, s.place || "", s.address || "", s.device_serial || "", s.contact_name || "", s.contact_phone || "", "", "", "", "", "", ""])
+      );
+    const help = workbook.addWorksheet("How to fill");
+    [
+      "One row per site and service. Keep Client and Site as they are to update a site already in the helpdesk;",
+      "a new name adds a new site (put its Town so it lands on the map).",
+      "Contract year: like 2026/27. Visit: Service, 1st service or 2nd service.",
+      "Status: Done, Pending or Skipped. A row with a Service call number counts as Done.",
+      "Date done and Due by: a date, or text like 2026.09.08 or 08.09.2026.",
+      "Rows with no contract year only update the site (address, serial, contact).",
+      "Import it on the Service Plan page: Import from Excel. You'll see what will change before anything is saved."
+    ].forEach((line) => help.addRow([line]));
+    help.getColumn(1).width = 110;
+    await downloadWorkbook(workbook, `ABSL Service Plan template ${localDateKey(new Date())}.xlsx`);
+  } catch (err) {
+    console.error("Template export failed", err);
+    showToast("Could not create the template. Please try again.", "error");
+  } finally {
+    button.disabled = false;
+  }
+}
+
+function cellText(value) {
+  if (value === null || value === undefined) return "";
+  if (value instanceof Date) return value;
+  if (typeof value === "object") {
+    if (value.result !== undefined) return cellText(value.result);
+    if (value.text !== undefined) return String(value.text);
+    if (Array.isArray(value.richText)) return value.richText.map((r) => r.text).join("");
+    if (value.hyperlink) return String(value.text || value.hyperlink);
+    return "";
+  }
+  return String(value);
+}
+
+// The first sheet's rows as objects keyed by its headings (found in the
+// first ten rows: the first row naming at least a site and something else).
+async function readImportSheet(file) {
+  const ExcelJS = await loadExcelJs();
+  const workbook = new ExcelJS.Workbook();
+  await workbook.xlsx.load(await file.arrayBuffer());
+  const sheet = workbook.worksheets[0];
+  if (!sheet) return [];
+  const known = Object.values(PLAN_IMPORT_COLUMNS).flat();
+  let headingRow = 0;
+  let headings = [];
+  for (let r = 1; r <= Math.min(10, sheet.rowCount); r++) {
+    const values = sheet.getRow(r).values.slice(1).map((v) => String(cellText(v)).trim());
+    const hits = values.filter((v) => known.includes(v.toLowerCase())).length;
+    if (hits >= 2 && values.some((v) => PLAN_IMPORT_COLUMNS.name.includes(v.toLowerCase()))) {
+      headingRow = r;
+      headings = values;
+      break;
+    }
+  }
+  if (!headingRow) return null;
+  const rows = [];
+  for (let r = headingRow + 1; r <= sheet.rowCount; r++) {
+    const values = sheet.getRow(r).values.slice(1);
+    if (!values.some((v) => String(cellText(v)).trim())) continue;
+    const row = {};
+    headings.forEach((h, i) => {
+      if (h) row[h] = cellText(values[i]);
+    });
+    rows.push(row);
+  }
+  return rows;
+}
+
+function openImportModal() {
+  const clients = servicePlanClients();
+  let plan = null;
+  const card = openPlanModal(
+    `<h2>Import from Excel</h2>
+     <p class="muted">An updated service sheet: the template from <strong>Download template</strong>, or any sheet with Client and Site columns (plus Town, Contract year, Status, Date done, Service call…). Nothing is saved until you press Import.</p>
+     <form class="plan-form">
+       <label for="importFile">Excel file (.xlsx)</label>
+       <input id="importFile" name="file" type="file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" required />
+       <label for="importClient">Client, if the sheet has no Client column</label>
+       <select id="importClient" name="client"><option value="">—</option>${clients.map((c) => `<option value="${escapeHtml(c)}">${escapeHtml(c)}</option>`).join("")}</select>
+       <div id="importPreview" class="import-preview"></div>
+       <div class="action-row">
+         <button class="secondary-button" type="button" data-modal-cancel>Cancel</button>
+         <button class="primary-button" type="submit">Check the file</button>
+       </div>
+     </form>`,
+    async (form, formEl) => {
+      const submit = formEl.querySelector("button[type=submit]");
+      const preview = formEl.querySelector("#importPreview");
+      if (!plan) {
+        const file = form.get("file");
+        if (!file || !file.size) return false;
+        let rows;
+        try {
+          rows = await readImportSheet(file);
+        } catch (err) {
+          console.error("import read", err);
+          showToast("That file couldn't be read. Save it as .xlsx and try again.", "error");
+          return false;
+        }
+        if (!rows) {
+          showToast("No heading row with a Site (or Location) column was found in the first sheet.", "warning");
+          return false;
+        }
+        plan = parseServicePlanImport(rows, state.clientSites.filter((s) => !s.is_base), tripPlaces(), {
+          defaultClient: String(form.get("client") || "")
+        });
+        const newSites = plan.sites.filter((s) => !s.siteId);
+        const changed = plan.sites.filter((s) => s.siteId && Object.keys(s.changes).length);
+        const byStatus = (st) => plan.services.filter((s) => s.status === st).length;
+        preview.innerHTML = `
+          <div class="notice">
+            <strong>${plan.sites.length} site${plan.sites.length === 1 ? "" : "s"} in the file:</strong>
+            ${newSites.length} new, ${changed.length} with changed details.<br />
+            <strong>${plan.services.length} service${plan.services.length === 1 ? "" : "s"}:</strong>
+            ${byStatus("done")} done, ${byStatus("pending")} pending, ${byStatus("skipped")} skipped.
+            ${newSites.length ? `<div class="small">New: ${escapeHtml(newSites.slice(0, 12).map((s) => s.name).join(", "))}${newSites.length > 12 ? "…" : ""}</div>` : ""}
+          </div>
+          ${
+            plan.warnings.length
+              ? `<details><summary>${plan.warnings.length} note${plan.warnings.length === 1 ? "" : "s"} to check</summary><ul class="small">${plan.warnings
+                  .slice(0, 40)
+                  .map((w) => `<li>${escapeHtml(w)}</li>`)
+                  .join("")}</ul></details>`
+              : ""
+          }`;
+        if (submit) submit.textContent = plan.sites.length || plan.services.length ? "Import" : "Nothing to import";
+        return false;
+      }
+
+      if (!plan.sites.length && !plan.services.length) return false;
+      submit.textContent = "Importing…";
+      const result = await applyServicePlanImport(plan, (text) => (preview.innerHTML = `<p class="small">${escapeHtml(text)}</p>`));
+      await loadServicePlan();
+      render();
+      showToast(result, "success");
+      return true;
+    }
+  );
+  // Choosing a different file starts the check again.
+  card?.querySelector("#importFile")?.addEventListener("change", () => {
+    plan = null;
+    const submit = card.querySelector("button[type=submit]");
+    if (submit) submit.textContent = "Check the file";
+    card.querySelector("#importPreview").innerHTML = "";
+  });
+}
+
+async function applyServicePlanImport(plan, progress) {
+  const keyOf = (client, name) => `${client.toLowerCase()}|${normalizeSiteName(name)}`;
+  const ids = new Map();
+  plan.sites.forEach((s) => s.siteId && ids.set(keyOf(s.client, s.name), s.siteId));
+  let added = 0;
+  let updated = 0;
+  let services = 0;
+  const problems = [];
+
+  const fresh = plan.sites.filter((s) => !s.siteId);
+  if (fresh.length) {
+    progress(`Adding ${fresh.length} new site${fresh.length === 1 ? "" : "s"}…`);
+    const { data, error } = await supabaseClient
+      .from("client_sites")
+      .insert(fresh.map((s) => ({ client: s.client, name: s.name, ...s.changes, lat: s.position?.lat ?? null, lng: s.position?.lng ?? null })))
+      .select("id, client, name");
+    if (error) problems.push(`new sites: ${friendlyError(error.message)}`);
+    else {
+      (data || []).forEach((row) => ids.set(keyOf(row.client, row.name), row.id));
+      added = (data || []).length;
+    }
+  }
+
+  const changed = plan.sites.filter((s) => s.siteId && Object.keys(s.changes).length);
+  for (const [i, s] of changed.entries()) {
+    progress(`Updating site details ${i + 1} of ${changed.length}…`);
+    const changes = { ...s.changes };
+    if (changes.place && s.position) Object.assign(changes, { lat: s.position.lat, lng: s.position.lng, location_exact: false });
+    const { error } = await supabaseClient.from("client_sites").update(changes).eq("id", s.siteId);
+    if (error) problems.push(`${s.name}: ${friendlyError(error.message)}`);
+    else updated += 1;
+  }
+
+  const rows = plan.services
+    .map((s) => ({ s, siteId: ids.get(s.key) }))
+    .filter(({ s, siteId }) => {
+      if (!siteId) problems.push(`${s.name}: site not saved, service skipped`);
+      return Boolean(siteId);
+    })
+    .map(({ s, siteId }) => ({
+      site_id: siteId,
+      contract_year: s.contractYear,
+      visit: s.visit,
+      status: s.status,
+      due_by: s.dueBy || null,
+      service_call_number: s.serviceCall || null,
+      done_at: s.status === "done" && s.doneDate ? new Date(`${s.doneDate}T12:00:00`).toISOString() : null,
+      done_by: null
+    }));
+  for (let i = 0; i < rows.length; i += 200) {
+    progress(`Saving services ${Math.min(i + 200, rows.length)} of ${rows.length}…`);
+    const { error } = await supabaseClient.from("planned_services").upsert(rows.slice(i, i + 200), { onConflict: "site_id,contract_year,visit" });
+    if (error) problems.push(`services: ${friendlyError(error.message)}`);
+    else services += rows.slice(i, i + 200).length;
+  }
+
+  const summary = `Imported: ${added} new site${added === 1 ? "" : "s"}, ${updated} updated, ${services} service${services === 1 ? "" : "s"}.`;
+  if (problems.length) {
+    console.error("import problems", problems);
+    return `${summary} Not saved: ${problems.slice(0, 3).join("; ")}${problems.length > 3 ? "…" : ""}`;
+  }
+  return summary;
+}
+
 function bindServicePlanEvents() {
   bindTripPlannerEvents();
 
-  const filters = document.querySelector("#planFilters");
-  if (filters) {
-    filters.onchange = () => {
-      const form = new FormData(filters);
-      planUi = { client: form.get("client") || "", status: form.get("status") || "pending", year: form.get("year") || "", search: planUi.search };
+  const bindFilters = (selector, apply) => {
+    const filters = document.querySelector(selector);
+    if (!filters) return;
+    filters.onchange = (event) => {
+      if (event.target.name === "search") return;
+      apply(new FormData(filters));
       render();
     };
     const search = filters.querySelector('input[name="search"]');
     if (search) {
       search.oninput = () => {
-        planUi.search = search.value;
+        apply(new FormData(filters));
         clearTimeout(search._timer);
         search._timer = setTimeout(() => {
           render();
-          const again = document.querySelector('#planFilters input[name="search"]');
+          const again = document.querySelector(`${selector} input[name="search"]`);
           if (again) {
             again.focus();
             again.setSelectionRange(again.value.length, again.value.length);
@@ -6615,7 +7152,13 @@ function bindServicePlanEvents() {
         }, 300);
       };
     }
-  }
+  };
+  bindFilters("#planFilters", (form) => {
+    planUi = { client: form.get("client") || "", status: form.get("status") || "pending", year: form.get("year") || "", search: form.get("search") || "" };
+  });
+  bindFilters("#siteFilters", (form) => {
+    siteUi = { client: form.get("client") || "", search: form.get("search") || "" };
+  });
 
   document.querySelectorAll("[data-plan-done]").forEach((b) => (b.onclick = () => openMarkDoneModal(b.dataset.planDone)));
   document.querySelectorAll("[data-plan-status]").forEach((b) => {
@@ -6628,12 +7171,15 @@ function bindServicePlanEvents() {
     };
   });
   document.querySelectorAll("[data-edit-site]").forEach((b) => (b.onclick = () => openSiteModal(b.dataset.editSite)));
-  const addSite = document.querySelector("#planAddSiteBtn");
-  if (addSite) addSite.onclick = () => openSiteModal(null);
-  const markDue = document.querySelector("#planMarkDueBtn");
-  if (markDue) markDue.onclick = openMarkDueModal;
-  const excel = document.querySelector("#planExcelBtn");
-  if (excel) excel.onclick = () => downloadServicePlanExcel(excel);
+  const bindButton = (selector, handler) => {
+    const el = document.querySelector(selector);
+    if (el) el.onclick = () => handler(el);
+  };
+  bindButton("#planAddSiteBtn", () => openSiteModal(null));
+  bindButton("#planMarkDueBtn", openMarkDueModal);
+  bindButton("#planImportBtn", openImportModal);
+  bindButton("#planExcelBtn", downloadServicePlanExcel);
+  bindButton("#planTemplateBtn", downloadPlanTemplate);
 }
 
 // --- User Guide (help.html) --------------------------------------------

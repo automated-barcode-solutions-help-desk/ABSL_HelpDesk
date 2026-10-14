@@ -69,7 +69,8 @@ module.exports = [
   { name: "main-console-backup", path: "/main-console", role: "admin", ...desk, panel: "Free plan space and backups" },
 
   // Service Plan and Trip Planner
-  { name: "trip-planner", path: "/trip-planner#ticket=00000000-0000-4000-8000-000000000207", role: "technician", ...desk, clip: "main#app", markText: ["Open route in Google Maps"], wait: 1500 },
+  { name: "trip-planner", path: "/trip-planner#ticket=00000000-0000-4000-8000-000000000207", role: "technician", ...desk, clip: "main#app", markText: ["Open day 1 in Google Maps"], wait: 1500 },
+  { name: "trip-planner-office", path: "/trip-planner#ticket=00000000-0000-4000-8000-000000000207", role: "operator", ...desk, clip: ".trip-result", markText: ["Assign the trip"], wait: 1500 },
   { name: "trip-planner-phone", path: "/trip-planner#ticket=00000000-0000-4000-8000-000000000207", role: "technician", ...phone, clip: "main#app", wait: 1500 },
   { name: "service-plan", path: "/service-plan", role: "operator", ...desk, clip: "main#app", wait: 1500 }
 ];
