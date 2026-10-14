@@ -37,7 +37,10 @@ const GUIDE_IMAGES = {
   "operator-approvals": { src: "guide/operator-approvals.webp" },
   reports: { src: "guide/reports.webp" },
   "main-console-staff": { src: "guide/main-console-staff.webp" },
-  "main-console-backup": { src: "guide/main-console-backup.webp" }
+  "main-console-backup": { src: "guide/main-console-backup.webp" },
+  "trip-planner": { src: "guide/trip-planner.webp" },
+  "trip-planner-phone": { src: "guide/trip-planner-phone.webp", phone: true },
+  "service-plan": { src: "guide/service-plan.webp" }
 };
 
 const GUIDE_LANGUAGES = [
@@ -89,7 +92,7 @@ const GUIDE_CONTENT = {
       image: "office-menu",
       items: [
         { title: "Top bar", body: "The dark bar at the very top: your connection status (**Connected** or **Offline**), **Help** (this guide) and **Sign Out**." },
-        { title: "Menu bar", body: "Just below it. Customers see their own portal; technicians see theirs and **My Job Reports**. Operators see **Dashboard**, **Reports**, **Approvals**, **Alerts**, **Notifications**, **Receipts** and **Client Errors** — and the CEO also sees **Main Console**." },
+        { title: "Menu bar", body: "Just below it. Customers see their own portal; technicians see theirs, **My Job Reports** and **Trip Planner**. Operators see **Dashboard**, **Reports**, **Approvals**, **Alerts**, **Notifications**, **Receipts**, **Client Errors** and **Service Plan** — and the CEO also sees **Main Console**." },
         { title: "Page header", body: "Your portal's name and what it's for, with your role and name on the right — so you always know which account you're signed in to." },
         { title: "Summary cards", body: "The numbers at the top of your dashboard: open tickets, jobs waiting for a technician, unread alerts and so on." },
         { title: "Lists and search", body: "Every ticket list has a search box plus status and priority filters. **See all** opens the complete list." },
@@ -197,6 +200,16 @@ const GUIDE_CONTENT = {
             ]
           },
           {
+            title: "Plan a trip with nearby services",
+            images: ["trip-planner-phone"],
+            steps: [
+              "Going somewhere far? Open **Trip Planner** from the menu bar, or press **Plan a trip** on an open job.",
+              "Choose where you're **Going to** (a job or a town). Pending client services on the way are ticked and put in the quickest order on the map; untick any you can't do.",
+              "Press **Open route in Google Maps** to drive it stop by stop.",
+              "At each stop press **Start service**: it becomes your job. Mark it **In Progress**, then **Resolved** with the service call number and receipt photo, and the service is marked done."
+            ]
+          },
+          {
             title: "My Job Reports",
             images: ["my-reports-filters", "my-reports-table"],
             steps: [
@@ -252,6 +265,17 @@ const GUIDE_CONTENT = {
               "Set its filters and press **Generate Report**.",
               "In the preview, sort any column by clicking its heading, filter each column, or search the whole report.",
               "**Download Excel** saves an Excel file, **Print Report** prints the report, and **Open Report** shows it full screen."
+            ]
+          },
+          {
+            title: "Service Plan and trips",
+            images: ["service-plan","trip-planner"],
+            steps: [
+              "**Service Plan** lists every client site and the service due there (Seylan branches, Youth Corps centres, SLT and CEA offices) on a map and in a table.",
+              "Filter by client, status or contract year; **Overdue** ones are listed first. **Download Excel** saves the list.",
+              "**Mark done** records a service done outside the helpdesk, with its service call number; **Skip** leaves a site out for that year.",
+              "**Mark sites due** adds a pending service for every site of a client, for a new contract year. Use **Add site** or **Edit** to set a site's exact map position: paste the numbers from Google Maps.",
+              "**Plan a trip** opens the **Trip Planner**: choose where a technician is going and see the services on the way."
             ]
           },
           {
@@ -388,7 +412,7 @@ const GUIDE_CONTENT = {
       image: "office-menu",
       items: [
         { title: "ඉහළ තීරුව", body: "ඉහළින්ම ඇති තද පැහැති තීරුව: ඔබේ සම්බන්ධතා තත්ත්වය (**Connected** හෝ **Offline**), **Help** (මෙම මාර්ගෝපදේශය) සහ **Sign Out**." },
-        { title: "මෙනු තීරුව", body: "එයට පහළින්. පාරිභෝගිකයින්ට ඔවුන්ගේ පෝටලය පෙනේ; technicians ලාට ඔවුන්ගේ පෝටලය සහ **My Job Reports**. Operators ලාට **Dashboard**, **Reports**, **Approvals**, **Alerts**, **Notifications**, **Receipts** සහ **Client Errors** පෙනේ — CEO ට **Main Console** ද පෙනේ." },
+        { title: "මෙනු තීරුව", body: "එයට පහළින්. පාරිභෝගිකයින්ට ඔවුන්ගේ පෝටලය පෙනේ; technicians ලාට ඔවුන්ගේ පෝටලය, **My Job Reports** සහ **Trip Planner**. Operators ලාට **Dashboard**, **Reports**, **Approvals**, **Alerts**, **Notifications**, **Receipts**, **Client Errors** සහ **Service Plan** පෙනේ — CEO ට **Main Console** ද පෙනේ." },
         { title: "පිටු ශීර්ෂය", body: "ඔබේ පෝටලයේ නම සහ එහි කාර්යය, දකුණු පසින් ඔබේ භූමිකාව සහ නම — ඒ නිසා ඔබ ඇතුළු වී සිටින්නේ කුමන ගිණුමෙන්දැයි සැමවිට දැනගත හැක." },
         { title: "සාරාංශ කාඩ්පත්", body: "ඔබේ dashboard එකේ ඉහළින් ඇති අංක: විවෘත ටිකට්පත්, technician කෙනෙකු බලාපොරොත්තුවෙන් සිටින වැඩ, නොකියවූ alerts ආදිය." },
         { title: "ලැයිස්තු සහ සෙවීම", body: "සෑම ටිකට් ලැයිස්තුවකම සෙවුම් කොටුවක් සහ status / priority filters ඇත. **See all** මඟින් සම්පූර්ණ ලැයිස්තුව විවෘත වේ." },
@@ -496,6 +520,16 @@ const GUIDE_CONTENT = {
             ]
           },
           {
+            title: "ගමනක් සැලසුම් කරන්න (Trip Planner)",
+            images: ["trip-planner-phone"],
+            steps: [
+              "දුර ගමනක් යනවාද? මෙනු තීරුවෙන් **Trip Planner** විවෘත කරන්න, නැතහොත් විවෘත වැඩයක **Plan a trip** ඔබන්න.",
+              "ඔබ යන තැන **Going to** යටතේ තෝරන්න (වැඩයක් හෝ නගරයක්). මඟ දිගේ ඇති පාරිභෝගික සේවා tick කර, ඉක්මන්ම පිළිවෙළට සිතියමේ පෙන්වයි; කළ නොහැකි ඒවා untick කරන්න.",
+              "එක් එක් නැවතුම අනුව යාමට **Open route in Google Maps** ඔබන්න.",
+              "සෑම නැවතුමකදීම **Start service** ඔබන්න: එය ඔබේ වැඩයක් බවට පත් වේ. **In Progress** කර, ඉන්පසු service call අංකය සහ රිසිට් ඡායාරූපය සමඟ **Resolved** කරන්න; එවිට සේවාව සම්පූර්ණ ලෙස සටහන් වේ."
+            ]
+          },
+          {
             title: "My Job Reports",
             images: ["my-reports-filters", "my-reports-table"],
             steps: [
@@ -551,6 +585,17 @@ const GUIDE_CONTENT = {
               "එහි filters සකසා **Generate Report** ඔබන්න.",
               "පෙරදසුනේ, ශීර්ෂය ක්ලික් කර ඕනෑම තීරුවක් පිළිවෙළට සකසන්න, එක් එක් තීරුව පෙරන්න, නැතහොත් සම්පූර්ණ වාර්තාවම සොයන්න.",
               "**Download Excel** මඟින් Excel ගොනුවක් සුරකියි, **Print Report** මඟින් මුද්‍රණය කරයි, **Open Report** මඟින් සම්පූර්ණ තිරයෙන් පෙන්වයි."
+            ]
+          },
+          {
+            title: "Service Plan සහ ගමන්",
+            images: ["service-plan","trip-planner"],
+            steps: [
+              "**Service Plan** හි සෑම පාරිභෝගික ස්ථානයක්ම සහ එහි කළ යුතු සේවාව (Seylan ශාඛා, Youth Corps මධ්‍යස්ථාන, SLT සහ CEA කාර්යාල) සිතියමක සහ වගුවක ඇත.",
+              "පාරිභෝගිකයා, තත්ත්වය හෝ කොන්ත්‍රාත් වර්ෂය අනුව පෙරන්න; **Overdue** ඒවා මුලින්ම පෙන්වයි. **Download Excel** මඟින් ලැයිස්තුව සුරකියි.",
+              "**Mark done** මඟින් helpdesk එකෙන් පිටත කළ සේවාවක් එහි service call අංකය සමඟ සටහන් කරයි; **Skip** මඟින් එම වර්ෂයට ස්ථානයක් ඉවත් කරයි.",
+              "**Mark sites due** මඟින් නව කොන්ත්‍රාත් වර්ෂයක් සඳහා පාරිභෝගිකයෙකුගේ සෑම ස්ථානයකටම කළ යුතු සේවාවක් එක් කරයි. ස්ථානයක නිවැරදි සිතියම් ස්ථානය සැකසීමට **Add site** හෝ **Edit** භාවිත කරන්න: Google Maps හි අංක paste කරන්න.",
+              "**Plan a trip** මඟින් **Trip Planner** විවෘත කරයි: technician කෙනෙකු යන තැන තෝරා මඟ දිගේ ඇති සේවා බලන්න."
             ]
           },
           {
@@ -687,7 +732,7 @@ const GUIDE_CONTENT = {
       image: "office-menu",
       items: [
         { title: "மேல் பட்டை", body: "மிக மேலே உள்ள கருமையான பட்டை: உங்கள் இணைப்பு நிலை (**Connected** அல்லது **Offline**), **Help** (இந்த வழிகாட்டி) மற்றும் **Sign Out**." },
-        { title: "மெனு பட்டை", body: "அதன் கீழே. வாடிக்கையாளர்கள் தங்கள் போர்ட்டலைப் பார்ப்பார்கள்; technicians தங்களுடையதையும் **My Job Reports** ஐயும். Operators **Dashboard**, **Reports**, **Approvals**, **Alerts**, **Notifications**, **Receipts** மற்றும் **Client Errors** ஐப் பார்ப்பார்கள் — CEO **Main Console** ஐயும் பார்ப்பார்." },
+        { title: "மெனு பட்டை", body: "அதன் கீழே. வாடிக்கையாளர்கள் தங்கள் போர்ட்டலைப் பார்ப்பார்கள்; technicians தங்களுடையதையும் **My Job Reports**, **Trip Planner** ஐயும். Operators **Dashboard**, **Reports**, **Approvals**, **Alerts**, **Notifications**, **Receipts**, **Client Errors** மற்றும் **Service Plan** ஐப் பார்ப்பார்கள் — CEO **Main Console** ஐயும் பார்ப்பார்." },
         { title: "பக்கத் தலைப்பு", body: "உங்கள் போர்ட்டலின் பெயரும் அதன் நோக்கமும், வலப்புறம் உங்கள் பங்கும் பெயரும் — எனவே எந்தக் கணக்கில் உள்நுழைந்துள்ளீர்கள் என்பது எப்போதும் தெரியும்." },
         { title: "சுருக்க அட்டைகள்", body: "உங்கள் dashboard இன் மேலே உள்ள எண்கள்: திறந்த டிக்கெட்டுகள், technician க்காகக் காத்திருக்கும் வேலைகள், படிக்காத alerts போன்றவை." },
         { title: "பட்டியல்கள் மற்றும் தேடல்", body: "ஒவ்வொரு டிக்கெட் பட்டியலிலும் தேடல் பெட்டியும் status / priority வடிகட்டிகளும் உள்ளன. **See all** முழுப் பட்டியலைத் திறக்கும்." },
@@ -795,6 +840,16 @@ const GUIDE_CONTENT = {
             ]
           },
           {
+            title: "பயணத்தைத் திட்டமிடுதல் (Trip Planner)",
+            images: ["trip-planner-phone"],
+            steps: [
+              "தொலைதூரம் செல்கிறீர்களா? மெனு பட்டையிலிருந்து **Trip Planner** ஐத் திறங்கள், அல்லது திறந்த வேலையில் **Plan a trip** அழுத்துங்கள்.",
+              "**Going to** இல் நீங்கள் செல்லும் இடத்தைத் தேர்ந்தெடுங்கள் (ஒரு வேலை அல்லது நகரம்). வழியில் உள்ள நிலுவைச் சேவைகள் tick செய்யப்பட்டு, வேகமான வரிசையில் வரைபடத்தில் காட்டப்படும்; செய்ய முடியாதவற்றை untick செய்யுங்கள்.",
+              "ஒவ்வொரு நிறுத்தமாகச் செல்ல **Open route in Google Maps** அழுத்துங்கள்.",
+              "ஒவ்வொரு நிறுத்தத்திலும் **Start service** அழுத்துங்கள்: அது உங்கள் வேலையாகும். **In Progress** ஆக்கி, பின்னர் service call எண் மற்றும் ரசீதுப் புகைப்படத்துடன் **Resolved** செய்யுங்கள்; சேவை முடிந்ததாகக் குறிக்கப்படும்."
+            ]
+          },
+          {
             title: "My Job Reports",
             images: ["my-reports-filters", "my-reports-table"],
             steps: [
@@ -850,6 +905,17 @@ const GUIDE_CONTENT = {
               "அதன் வடிகட்டிகளை அமைத்து **Generate Report** அழுத்துங்கள்.",
               "முன்னோட்டத்தில், தலைப்பைக் கிளிக் செய்து எந்த நெடுவரிசையையும் வரிசைப்படுத்துங்கள், ஒவ்வொரு நெடுவரிசையையும் வடிகட்டுங்கள், அல்லது முழு அறிக்கையிலும் தேடுங்கள்.",
               "**Download Excel** Excel கோப்பைச் சேமிக்கும், **Print Report** அச்சிடும், **Open Report** முழுத் திரையில் காட்டும்."
+            ]
+          },
+          {
+            title: "Service Plan மற்றும் பயணங்கள்",
+            images: ["service-plan","trip-planner"],
+            steps: [
+              "**Service Plan** இல் ஒவ்வொரு வாடிக்கையாளர் இடமும் அங்கு செய்ய வேண்டிய சேவையும் (Seylan கிளைகள், Youth Corps நிலையங்கள், SLT மற்றும் CEA அலுவலகங்கள்) வரைபடத்திலும் அட்டவணையிலும் உள்ளன.",
+              "வாடிக்கையாளர், நிலை அல்லது ஒப்பந்த ஆண்டு மூலம் வடிகட்டுங்கள்; **Overdue** ஆனவை முதலில் காட்டப்படும். **Download Excel** பட்டியலைச் சேமிக்கும்.",
+              "**Mark done** helpdesk க்கு வெளியே செய்த சேவையை அதன் service call எண்ணுடன் பதிவு செய்யும்; **Skip** அந்த ஆண்டுக்கு ஒரு இடத்தை விலக்கும்.",
+              "**Mark sites due** புதிய ஒப்பந்த ஆண்டுக்கு ஒரு வாடிக்கையாளரின் ஒவ்வொரு இடத்துக்கும் நிலுவைச் சேவையைச் சேர்க்கும். ஒரு இடத்தின் சரியான வரைபட இருப்பிடத்தை அமைக்க **Add site** அல்லது **Edit** பயன்படுத்துங்கள்: Google Maps இலிருந்து எண்களை paste செய்யுங்கள்.",
+              "**Plan a trip** **Trip Planner** ஐத் திறக்கும்: technician செல்லும் இடத்தைத் தேர்ந்தெடுத்து வழியில் உள்ள சேவைகளைப் பாருங்கள்."
             ]
           },
           {

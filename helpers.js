@@ -474,6 +474,220 @@ function sortReportRows(rows, key, direction = "asc") {
   });
 }
 
+/* ---------------------------------------------------------------------
+   Trip planning (Service Plan, 0039)
+   ---------------------------------------------------------------------
+   Free and offline: no routing service is called. Distances are straight
+   lines scaled up to roughly what Sri Lankan roads add, which is plenty to
+   decide which planned services are "on the way" and in what order to do
+   them. The technician then opens the ordered route in Google Maps, which
+   gives the real roads and drive times.
+   Points are { lat, lng } in degrees. */
+
+// Road distance is typically ~1.3-1.4x the straight line here (more in
+// the hills, less on the A9). Used for every estimate below.
+const ROAD_FACTOR = 1.35;
+// Average driving speed for the time estimate, km/h.
+const TRIP_AVERAGE_KMH = 40;
+// Google Maps directions links take at most 9 stops between start and end.
+const GOOGLE_MAPS_MAX_WAYPOINTS = 9;
+
+function isPoint(p) {
+  return Boolean(p) && Number.isFinite(Number(p.lat)) && Number.isFinite(Number(p.lng));
+}
+
+/** Straight-line distance in km. */
+function haversineKm(a, b) {
+  const rad = (deg) => (Number(deg) * Math.PI) / 180;
+  const dLat = rad(b.lat - a.lat);
+  const dLng = rad(b.lng - a.lng);
+  const h = Math.sin(dLat / 2) ** 2 + Math.cos(rad(a.lat)) * Math.cos(rad(b.lat)) * Math.sin(dLng / 2) ** 2;
+  return 2 * 6371 * Math.asin(Math.min(1, Math.sqrt(h)));
+}
+
+/** Estimated road km between two points. */
+function roadKm(a, b) {
+  return haversineKm(a, b) * ROAD_FACTOR;
+}
+
+/** Extra road km to call at `point` on the way from `start` to `destination`. */
+function detourKm(start, destination, point) {
+  return Math.max(0, roadKm(start, point) + roadKm(point, destination) - roadKm(start, destination));
+}
+
+/**
+ * How far out of the way is reasonable for this trip: 15% of its length,
+ * at least 20 km and at most 80. A day trip to Haputale allows ~25 km, a
+ * run to Jaffna ~60 km (Vavuniya and Kilinochchi are on the A9, but the
+ * straight line from Colombo runs up the west coast).
+ */
+function autoDetourKm(start, destination) {
+  if (!isPoint(start) || !isPoint(destination)) return 20;
+  return Math.min(80, Math.max(20, Math.round(roadKm(start, destination) * 0.15)));
+}
+
+/**
+ * Which candidates are worth calling at on a trip from start to
+ * destination: those costing at most maxDetourKm extra (autoDetourKm() when
+ * not given). Overdue ones first,
+ * then the smallest detour. Candidates without a position are skipped.
+ * Each result is the candidate plus { detourKm, overdue }.
+ */
+function nearbyStops(start, destination, candidates, { maxDetourKm = null, today = new Date() } = {}) {
+  if (!isPoint(start) || !isPoint(destination)) return [];
+  const limit = Number.isFinite(maxDetourKm) && maxDetourKm > 0 ? maxDetourKm : autoDetourKm(start, destination);
+  const todayKey = localDateKey(today);
+  return (candidates || [])
+    .filter(isPoint)
+    .map((c) => ({ ...c, detourKm: detourKm(start, destination, c), overdue: Boolean(c.dueBy && c.dueBy < todayKey) }))
+    .filter((c) => c.detourKm <= limit)
+    .sort((a, b) => Number(b.overdue) - Number(a.overdue) || a.detourKm - b.detourKm);
+}
+
+function pathKm(points) {
+  let total = 0;
+  for (let i = 1; i < points.length; i++) total += roadKm(points[i - 1], points[i]);
+  return total;
+}
+
+/**
+ * The quickest order to visit `stops` from `start`, finishing at `end`
+ * (pass null to finish at whichever stop is best). Exact for up to 11
+ * stops; beyond that a nearest-neighbour route improved by 2-opt.
+ * Returns { order: [stop...], km }.
+ */
+function orderStops(start, stops, end = null) {
+  const list = (stops || []).filter(isPoint);
+  const n = list.length;
+  if (n === 0) return { order: [], km: end ? roadKm(start, end) : 0 };
+
+  const legKm = (from, to) => roadKm(from, to);
+  let best;
+
+  if (n <= 11) {
+    // Held-Karp: cost[mask][last] = shortest path from start through the
+    // stops in mask, ending at stop `last`.
+    const size = 1 << n;
+    const cost = Array.from({ length: size }, () => new Float64Array(n).fill(Infinity));
+    const prev = Array.from({ length: size }, () => new Int8Array(n).fill(-1));
+    for (let i = 0; i < n; i++) cost[1 << i][i] = legKm(start, list[i]);
+    for (let mask = 1; mask < size; mask++) {
+      for (let last = 0; last < n; last++) {
+        if (!(mask & (1 << last)) || cost[mask][last] === Infinity) continue;
+        for (let next = 0; next < n; next++) {
+          if (mask & (1 << next)) continue;
+          const nextMask = mask | (1 << next);
+          const c = cost[mask][last] + legKm(list[last], list[next]);
+          if (c < cost[nextMask][next]) {
+            cost[nextMask][next] = c;
+            prev[nextMask][next] = last;
+          }
+        }
+      }
+    }
+    const full = size - 1;
+    let bestLast = 0;
+    let bestKm = Infinity;
+    for (let last = 0; last < n; last++) {
+      const c = cost[full][last] + (end ? legKm(list[last], end) : 0);
+      if (c < bestKm) {
+        bestKm = c;
+        bestLast = last;
+      }
+    }
+    const order = [];
+    let mask = full;
+    let at = bestLast;
+    while (at !== -1) {
+      order.unshift(list[at]);
+      const before = prev[mask][at];
+      mask &= ~(1 << at);
+      at = before;
+    }
+    best = { order, km: bestKm };
+  } else {
+    // Nearest neighbour, then 2-opt until nothing improves.
+    const remaining = [...list];
+    const order = [];
+    let at = start;
+    while (remaining.length) {
+      let pick = 0;
+      for (let i = 1; i < remaining.length; i++) {
+        if (legKm(at, remaining[i]) < legKm(at, remaining[pick])) pick = i;
+      }
+      at = remaining.splice(pick, 1)[0];
+      order.push(at);
+    }
+    const total = (o) => pathKm([start, ...o, ...(end ? [end] : [])]);
+    let improved = true;
+    while (improved) {
+      improved = false;
+      for (let i = 0; i < order.length - 1; i++) {
+        for (let j = i + 1; j < order.length; j++) {
+          const candidate = [...order.slice(0, i), ...order.slice(i, j + 1).reverse(), ...order.slice(j + 1)];
+          if (total(candidate) + 1e-9 < total(order)) {
+            order.splice(0, order.length, ...candidate);
+            improved = true;
+          }
+        }
+      }
+    }
+    best = { order, km: total(order) };
+  }
+
+  return best;
+}
+
+/** Hours of driving for a distance, rounded to the half hour. */
+function tripHours(km) {
+  return Math.max(0.5, Math.round((km / TRIP_AVERAGE_KMH) * 2) / 2);
+}
+
+/**
+ * A Google Maps directions link for the stops in this order. Opens the
+ * Google Maps app on a phone, with turn-by-turn navigation. Waypoints past
+ * Google's limit are left out (the caller warns about that).
+ */
+function googleMapsTripUrl(start, stops, end) {
+  const fmt = (p) => `${Number(p.lat).toFixed(6)},${Number(p.lng).toFixed(6)}`;
+  const all = [...(stops || [])];
+  const destination = end || all.pop() || start;
+  const waypoints = all.slice(0, GOOGLE_MAPS_MAX_WAYPOINTS);
+  const params = new URLSearchParams({ api: "1", origin: fmt(start), destination: fmt(destination), travelmode: "driving" });
+  if (waypoints.length) params.set("waypoints", waypoints.map(fmt).join("|"));
+  return `https://www.google.com/maps/dir/?${params.toString()}`;
+}
+
+/**
+ * Finds a known town in free text such as a ticket's location ("Main
+ * branch, Jaffna"). The longest matching name wins, so "Nuwara Eliya"
+ * beats "Eliya" and "Havelock Town" beats "Town". Returns the place or null.
+ */
+function findPlaceInText(text, places) {
+  const haystack = ` ${String(text || "").toLowerCase().replace(/[^a-z0-9]+/g, " ")} `;
+  let found = null;
+  for (const place of places || []) {
+    const name = String(place.name || "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+    if (name.length < 3) continue;
+    if (haystack.includes(` ${name} `) && (!found || name.length > found.name.length)) found = place;
+  }
+  return found;
+}
+
+/**
+ * Parses a position typed or pasted by a person: "6.9271, 79.8612", or a
+ * Google Maps link containing "@6.9271,79.8612" or "?q=6.9271,79.8612".
+ * Only positions in Sri Lanka are accepted. Returns { lat, lng } or null.
+ */
+function parseLatLng(text) {
+  const match = String(text || "").match(/(-?\d{1,2}\.\d+)\s*,\s*(-?\d{2,3}\.\d+)/);
+  if (!match) return null;
+  const lat = Number(match[1]);
+  const lng = Number(match[2]);
+  if (lat < 5.5 || lat > 10.2 || lng < 79.3 || lng > 82.2) return null;
+  return { lat, lng };
+}
+
 if (typeof module !== "undefined" && module.exports) {
   module.exports = {
     UPLOAD_LIMITS,
@@ -511,6 +725,18 @@ if (typeof module !== "undefined" && module.exports) {
     relativeTime,
     matchesQuery,
     filterTickets,
-    friendlyError
+    friendlyError,
+    ROAD_FACTOR,
+    GOOGLE_MAPS_MAX_WAYPOINTS,
+    haversineKm,
+    roadKm,
+    detourKm,
+    autoDetourKm,
+    nearbyStops,
+    orderStops,
+    tripHours,
+    googleMapsTripUrl,
+    findPlaceInText,
+    parseLatLng
   };
 }

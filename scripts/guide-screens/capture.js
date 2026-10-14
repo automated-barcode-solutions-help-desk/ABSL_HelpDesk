@@ -92,7 +92,7 @@ function helpers(page) {
       const url = req.url();
       if (/\/vendor\/supabase-js[^/]*\.js$/.test(url)) return req.respond({ contentType: "text/javascript", body: mock });
       if (url.endsWith("/config.js")) return req.respond({ contentType: "text/javascript", body: 'window.ABSL_SUPABASE = { url: "https://sample.supabase.co", anonKey: "sample" };' });
-      if (url.startsWith(base) || url.startsWith("data:") || /fonts\.(googleapis|gstatic)\.com/.test(url)) return req.continue();
+      if (url.startsWith(base) || url.startsWith("data:") || /fonts\.(googleapis|gstatic)\.com|tile\.openstreetmap\.org/.test(url)) return req.continue();
       return req.abort();
     });
     page.on("pageerror", (err) => console.error(`  [${shot.name}] page error: ${err.message}`));
@@ -107,7 +107,8 @@ function helpers(page) {
                 *, *::before, *::after { animation: none !important; transition: none !important; caret-color: transparent !important; }`
     });
     if (shot.prepare) await shot.prepare(page, helpers(page));
-    await new Promise((r) => setTimeout(r, 250));
+    // shot.wait: time for map tiles and other late arrivals.
+    await new Promise((r) => setTimeout(r, shot.wait || 250));
 
     if (survey) {
       const file = path.join(surveyDir, `${shot.name}.png`);

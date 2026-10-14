@@ -2660,3 +2660,275 @@ a.stat-card-link:focus-visible {
     flex: 0 1 min(100%, 320px);
   }
 }
+
+/* Service Plan and Trip Planner (0039). */
+.trip-layout {
+  display: grid;
+  grid-template-columns: minmax(260px, 340px) minmax(0, 1fr);
+  gap: 18px;
+  align-items: start;
+  margin-bottom: 18px;
+}
+
+@media (max-width: 860px) {
+  .trip-layout {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+.trip-form {
+  display: grid;
+  gap: 10px;
+}
+
+.trip-fieldset {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  padding: 10px 12px;
+  border: 1px solid var(--line-solid);
+  border-radius: var(--radius);
+}
+
+.trip-fieldset legend {
+  padding: 0 4px;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.radio-row,
+.checkbox-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.radio-row input,
+.checkbox-row input {
+  width: auto;
+  min-height: 0;
+  margin: 0;
+}
+
+.trip-summary {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.trip-summary p {
+  margin: 4px 0 0;
+}
+
+.trip-map {
+  height: 420px;
+  border: 1px solid var(--line-solid);
+  border-radius: var(--radius);
+  background: #e5e7eb;
+  z-index: 0;
+}
+
+.plan-map {
+  height: 360px;
+  margin: 12px 0;
+}
+
+@media (max-width: 640px) {
+  .trip-map {
+    height: 320px;
+  }
+}
+
+.map-fallback {
+  padding: 16px;
+}
+
+.trip-pin span {
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  border: 2px solid #ffffff;
+  border-radius: 50%;
+  box-shadow: 0 2px 6px rgba(15, 23, 42, 0.35);
+  color: #ffffff;
+  font: 800 13px/1 Inter, sans-serif;
+}
+
+.trip-pin-start span {
+  background: #059669;
+}
+
+.trip-pin-stop span {
+  background: #2563eb;
+}
+
+.trip-pin-job span {
+  background: #dc2626;
+}
+
+.trip-itinerary {
+  display: grid;
+  gap: 8px;
+  margin: 14px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.trip-stop {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--paper-solid);
+}
+
+.trip-stop-job {
+  border-color: #fca5a5;
+}
+
+.trip-stop-body {
+  flex: 1;
+  min-width: 0;
+}
+
+.trip-stop-number {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  background: #2563eb;
+  color: #ffffff;
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.trip-stop-start .trip-stop-number {
+  background: #059669;
+}
+
+.trip-stop-job .trip-stop-number {
+  background: #dc2626;
+}
+
+.trip-suggestions {
+  display: grid;
+  gap: 6px;
+  margin: 10px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.trip-suggestions li {
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+}
+
+.trip-suggestions .badge {
+  margin-left: 6px;
+}
+
+.plan-filters {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.plan-filters label {
+  display: grid;
+  gap: 4px;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.table-scroll {
+  overflow-x: auto;
+}
+
+.plan-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 14px;
+}
+
+.plan-table th,
+.plan-table td {
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--line);
+  text-align: left;
+  vertical-align: top;
+}
+
+.plan-table th {
+  font-size: 12px;
+  color: var(--ink-secondary);
+  white-space: nowrap;
+}
+
+.plan-table tr.is-inactive td {
+  opacity: 0.55;
+}
+
+.plan-actions {
+  white-space: nowrap;
+}
+
+.plan-actions > * + * {
+  margin-left: 6px;
+}
+
+/* Trip Planner and Service Plan form controls, styled like .field. */
+.trip-form,
+.plan-form {
+  display: grid;
+  gap: 8px;
+}
+
+.trip-form > label:not(.checkbox-row):not(.radio-row),
+.plan-form > label:not(.checkbox-row) {
+  margin-top: 4px;
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--ink-secondary);
+}
+
+.plan-form .action-row {
+  margin-top: 8px;
+  justify-content: flex-end;
+}
+
+.trip-form select,
+.plan-filters select,
+.plan-filters input,
+.plan-form select,
+.plan-form input:not([type="checkbox"]):not([type="radio"]) {
+  width: 100%;
+  max-width: 100%;
+  min-height: 44px;
+  padding: 10px 14px;
+  border: 1px solid var(--line-solid);
+  border-radius: var(--radius);
+  background: var(--paper-solid);
+  color: var(--ink);
+}
+
+.trip-form select:focus,
+.plan-filters select:focus,
+.plan-filters input:focus,
+.plan-form select:focus,
+.plan-form input:focus {
+  border-color: var(--teal);
+  box-shadow: 0 0 0 3px var(--teal-light);
+  outline: none;
+}

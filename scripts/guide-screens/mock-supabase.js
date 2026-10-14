@@ -55,7 +55,8 @@
     T(3, { title: "Install two new POS scanners", description: "New counters 5 and 6.", status: "new", priority: "low", job_type: "installation", created_by: people.operator.id, caller_name: "Mrs. Perera", caller_phone: "0779876543", company_id: uuid(102), assigned_technician_id: null, open_for_claim: true, created_at: ago(5) }),
     T(4, { title: "Label printer service", description: "Quarterly service.", status: "resolved", priority: "medium", job_type: "service", created_by: people.customer.id, company_id: uuid(101), assigned_technician_id: people.technician.id, service_call_number: "SC-2026-0042", resolution_notes: "Cleaned print head and replaced the platen roller. Test labels OK.", created_at: ago(70) }),
     T(5, { title: "Receipt printer paper jam", description: "Paper jams every few receipts.", status: "new", priority: "high", job_type: "fault", created_by: people.operator.id, caller_name: "Mr. Silva", caller_phone: "0712223344", company_id: uuid(103), assigned_technician_id: null, created_at: ago(1) }),
-    T(6, { title: "Data collector battery issue", description: "Battery drains in two hours.", status: "closed", priority: "low", job_type: "fault", created_by: people.customer.id, company_id: uuid(101), assigned_technician_id: people.technician2.id, service_call_number: "SC-2026-0031", created_at: ago(240) })
+    T(6, { title: "Data collector battery issue", description: "Battery drains in two hours.", status: "closed", priority: "low", job_type: "fault", created_by: people.customer.id, company_id: uuid(101), assigned_technician_id: people.technician2.id, service_call_number: "SC-2026-0031", created_at: ago(240) }),
+    T(7, { title: "Fingerprint machine offline", description: "Attendance device shows no network.", status: "new", priority: "high", job_type: "fault", created_by: people.operator.id, caller_name: "Mr. Sivakumar", caller_phone: "0214567890", company_id: uuid(102), assigned_technician_id: people.technician.id, location_name: "Hospital Road, Jaffna", created_at: ago(3) })
   ];
   if (role === "customer") tickets = tickets.filter((t) => t.created_by === people.customer.id);
   if (role === "technician") tickets = tickets.filter((t) => t.assigned_technician_id === people.technician.id || t.open_for_claim);
@@ -104,6 +105,29 @@
     technician_notes: null, assigned_at: t.created_at, opened: t.status !== "new" || t.id === uuid(204)
   });
 
+  // Service Plan sample (0039): the office, and sites with services due.
+  const site = (n, client, name, place, lat, lng, extra = {}) => ({ id: uuid(900 + n), client, name, place, lat, lng, address: null, region: null, device_serial: null, location_exact: false, is_base: false, active: true, ...extra });
+  const sites = [
+    site(0, "ABSL", "ABSL Office", "Colombo", 6.9387, 79.8542, { is_base: true }),
+    site(1, "Seylan Bank", "Vavuniya", "Vavuniya", 8.7591, 80.4999),
+    site(2, "Seylan Bank", "Anuradhapura", "Anuradhapura", 8.3349, 80.4108),
+    site(3, "Seylan Bank", "Mullaitivu", "Mullaitivu", 9.2698, 80.8146),
+    site(4, "National Youth Corps", "Mannar", "Mannar", 8.9806, 79.904, { device_serial: "OLK6060056061500005" }),
+    site(5, "National Youth Corps", "Irattaperiyakulam", "Irattaperiyakulam", 8.7512, 80.5044, { device_serial: "OLK6060056061500011" }),
+    site(6, "National Youth Corps", "Kala-Wewa", "Kalawewa", 8.0004, 80.5336),
+    site(7, "Seylan Bank", "Batticaloa", "Batticaloa", 7.8383, 81.5569),
+    site(8, "National Youth Corps", "Galle", "Galle", 6.0329, 80.2151),
+    site(9, "SLT-Mobitel", "Kilinochchi Teleshop", "Kilinochchi", 9.3841, 80.4087),
+    site(10, "Seylan Bank", "Kandy", "Kandy", 7.2932, 80.6350)
+  ];
+  const plan = (n, siteN, year, due, extra = {}) => ({ id: uuid(950 + n), site_id: uuid(900 + siteN), contract_year: year, visit: "Service", due_by: due, status: "pending", ticket_id: null, service_call_number: null, done_at: null, notes: null, ...extra });
+  const plans = [
+    plan(1, 1, "2025/26", "2026-07-31"), plan(2, 2, "2025/26", "2026-07-31"), plan(3, 3, "2025/26", "2026-07-31"),
+    plan(4, 4, "2026/27", null), plan(5, 5, "2026/27", null), plan(6, 6, "2026/27", null),
+    plan(7, 7, "2025/26", "2026-07-31"), plan(8, 8, "2026/27", null),
+    plan(9, 10, "2025/26", "2026-07-31", { status: "done", service_call_number: "10136", done_at: ago(400) })
+  ];
+
   const tables = {
     profiles: () => (role === "admin" ? Object.values(people).map((p) => ({ ...p, approval_status: "approved" })) : [me]),
     tickets: ticketRows,
@@ -126,7 +150,9 @@
     admin_alerts: () => [],
     ticket_receipts: () => [],
     client_error_logs: () => [],
-    ticket_attachments: () => []
+    ticket_attachments: () => [],
+    client_sites: () => sites,
+    planned_services: () => plans
   };
 
   const rpcs = {
