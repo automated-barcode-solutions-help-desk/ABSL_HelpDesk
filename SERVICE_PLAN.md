@@ -26,8 +26,12 @@ to a far job. Free: no paid map or routing service is used.
 **Trip Planner** (technicians, operators, the CEO; also **Plan a trip** on
 any open job)
 - Going to a job, a town, or "client sites around the start".
-- Pending services on the way are ticked (overdue first); **other client
-  sites on the way** with nothing due can be ticked too.
+- Pending services on the way: the first 8 (overdue, then least out of the
+  way) are ticked, up to 20 can be. **Other client sites on the way** with
+  nothing due can be ticked too.
+- On trips of 100 km or more, sites near the start (the first 20% of the
+  trip, up to 60 km) are left out: they're for a local run. **Include sites
+  near the start** shows them.
 - The stops are put in the shortest order and split into days by the
   driving day and time at each stop; each day has its own Google Maps link
   (up to 9 stops a day).
@@ -65,9 +69,14 @@ tests/service-plan.test.mjs):
 | Central Environmental Authority | 26 | office list from an online search, to be confirmed |
 | ABSL Office | 1 | where trips start |
 
-The sheets were old, so only their **locations** are used: 0040 removed the
-service statuses 0039 had taken from them. Due services come from updated
-sheets (Import from Excel) or Mark sites due.
+The Seylan sheets are right about every service they record, just not kept
+up to date. 0041 loaded all 340 recorded services as history (2024/25 1st and
+2nd service, 2025/26, 2026/27; date and service call number where given), so
+185 of the 206 sites show a last service. Every active Seylan branch and NYC
+centre with no 2026/27 service yet is Pending for 2026/27, due by 31 Jul 2027
+(nothing overdue). If one was done but not written down, mark it done or
+import the updated sheet. (0040 had removed the earlier statuses 0039 guessed
+from the "TO COMPLETE" list.)
 
 Positions are **town-level** from OpenStreetMap (© OpenStreetMap
 contributors); a stop may be a few km off until its exact position is set.

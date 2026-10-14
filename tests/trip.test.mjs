@@ -164,3 +164,23 @@ test("parseLatLng reads typed positions and Google Maps links, only in Sri Lanka
   assert.equal(h.parseLatLng("51.5072, -0.1276"), null);
   assert.equal(h.parseLatLng("Colombo"), null);
 });
+
+test("autoMinFromStartKm leaves out the start of long trips only", () => {
+  assert.equal(h.autoMinFromStartKm(P.colombo, P.jaffna), 60);
+  assert.equal(h.autoMinFromStartKm(P.colombo, P.haputale), 33);
+  assert.equal(h.autoMinFromStartKm(P.colombo, { lat: 7.087, lng: 79.9 }), 0);
+});
+
+test("nearbyStops: Colombo branches are not on the way to Jaffna", () => {
+  const colomboBranches = [
+    { lat: 6.948, lng: 79.86, name: "Kotahena" },
+    { lat: 7.079, lng: 79.891, name: "Ja-Ela" },
+    { lat: 7.209, lng: 79.833, name: "Negombo" }
+  ];
+  const all = [...colomboBranches, P.vavuniya, P.mannar];
+  const minFromStartKm = h.autoMinFromStartKm(P.colombo, P.jaffna);
+  const names = h.nearbyStops(P.colombo, P.jaffna, all, { minFromStartKm }).map((s) => s.name);
+  assert.deepEqual(names.sort(), ["Mannar", "Vavuniya"]);
+  // Without the rule they would all count: they cost almost no extra distance.
+  assert.equal(h.nearbyStops(P.colombo, P.jaffna, all).length, 5);
+});

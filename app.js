@@ -5731,6 +5731,8 @@ function pendingApprovalPage() {
 // Stops a trip can take besides its destination; days keep each Google
 // Maps link within its 9-stop limit.
 const TRIP_MAX_STOPS = 20;
+// How many pending services a new trip starts with ticked.
+const TRIP_DEFAULT_PICKS = 8;
 let servicePlanError = "";
 
 function isStaffRole(role = userRole()) {
@@ -5896,6 +5898,7 @@ let tripUi = {
   dest: "",
   detour: "auto",
   roundTrip: true,
+  includeNearStart: false,
   hoursPerDay: 8,
   stopMinutes: 45,
   clients: null, // null: every client
@@ -5966,19 +5969,22 @@ function computeTrip() {
   const sites = siteVisitRows().filter(wanted);
   const maxDetourKm =
     tripUi.detour === "auto" ? (dest.around ? 60 : autoDetourKm(start, dest)) : Number(tripUi.detour);
-  const pending = nearbyStops(start, dest, plans, { maxDetourKm });
-  const others = nearbyStops(start, dest, sites, { maxDetourKm });
+  const minFromStartKm = dest.around || tripUi.includeNearStart ? 0 : autoMinFromStartKm(start, dest);
+  const pending = nearbyStops(start, dest, plans, { maxDetourKm, minFromStartKm });
+  const others = nearbyStops(start, dest, sites, { maxDetourKm, minFromStartKm });
 
-  // Pending services are in the trip unless unticked; other sites only
-  // when ticked. Those choices last until the destination or start changes
-  // (filters and distances don't wipe them).
+  // The first few pending services (overdue, then nearest) are in the
+  // trip unless unticked; any other stop only when ticked. Those choices
+  // last until the destination or start changes (filters and distances
+  // don't wipe them).
   const choicesKey = `${tripUi.dest}|${tripUi.start}`;
   if (tripUi.choicesFor !== choicesKey) {
     tripUi.skipped = new Set();
     tripUi.added = new Set();
     tripUi.choicesFor = choicesKey;
   }
-  const wantedStop = (s) => (s.kind === "plan" ? !tripUi.skipped.has(s.id) : tripUi.added.has(s.id));
+  const defaults = new Set(pending.slice(0, TRIP_DEFAULT_PICKS).map((s) => s.id));
+  const wantedStop = (s) => tripUi.added.has(s.id) || (defaults.has(s.id) && !tripUi.skipped.has(s.id));
   const chosen = [...pending, ...others].filter(wantedStop).slice(0, TRIP_MAX_STOPS);
   const pickedIds = new Set(chosen.map((s) => s.id));
 
@@ -5990,7 +5996,7 @@ function computeTrip() {
     stopMinutes: Number(tripUi.stopMinutes)
   });
   const stopHours = days.reduce((sum, d) => sum + d.stopHours, 0);
-  return { start, dest, maxDetourKm, pending, others, chosen, pickedIds, order, km, end, days, stopHours };
+  return { start, dest, maxDetourKm, minFromStartKm, pending, others, chosen, pickedIds, order, km, end, days, stopHours };
 }
 
 function tripStopLabel(stop) {
@@ -6078,6 +6084,7 @@ function tripPlannerPage() {
         </select>
 
         <label class="checkbox-row"><input type="checkbox" id="tripReturn" ${tripUi.roundTrip ? "checked" : ""} /> Come back to the start</label>
+        <label class="checkbox-row"><input type="checkbox" id="tripNearStart" ${tripUi.includeNearStart ? "checked" : ""} /> Include sites near the start</label>
 
         <div class="trip-pair">
           <label>Driving day
@@ -6205,7 +6212,7 @@ function tripPlannerPage() {
         </div>
         ${
           trip.pending.length
-            ? `<p class="small muted">Ticked ones are in the trip. Overdue ones come first.</p>${tripSuggestionList(trip.pending, trip.pickedIds)}`
+            ? `<p class="small muted">Overdue first, then the least out of the way. The first ${TRIP_DEFAULT_PICKS} are ticked; tick more (up to ${TRIP_MAX_STOPS} stops) or untick any.${trip.minFromStartKm ? ` Sites within ${trip.minFromStartKm} km of the start are left out (they're for a local run; tick <strong>Include sites near the start</strong> to see them).` : ""}</p>${tripSuggestionList(trip.pending, trip.pickedIds)}`
             : `<div class="empty-state">No services marked due near this trip. Mark them on the Service Plan page, or add other client sites below.</div>`
         }
       </article>
@@ -6405,6 +6412,11 @@ function bindTripPlannerEvents() {
     bindSelect("#tripDetour", "detour");
     bindSelect("#tripHours", "hoursPerDay");
     bindSelect("#tripStopMinutes", "stopMinutes");
+    const nearStart = form.querySelector("#tripNearStart");
+    if (nearStart) nearStart.onchange = () => {
+      tripUi.includeNearStart = nearStart.checked;
+      render();
+    };
     const back = form.querySelector("#tripReturn");
     if (back) back.onchange = () => {
       tripUi.roundTrip = back.checked;
@@ -6431,8 +6443,13 @@ function bindTripPlannerEvents() {
         showToast(`A trip can take up to ${TRIP_MAX_STOPS} stops. Untick one first.`, "warning");
         return;
       }
-      if (isSite) box.checked ? tripUi.added.add(id) : tripUi.added.delete(id);
-      else box.checked ? tripUi.skipped.delete(id) : tripUi.skipped.add(id);
+      if (box.checked) {
+        tripUi.added.add(id);
+        tripUi.skipped.delete(id);
+      } else {
+        tripUi.added.delete(id);
+        if (!isSite) tripUi.skipped.add(id);
+      }
       render();
     };
   });

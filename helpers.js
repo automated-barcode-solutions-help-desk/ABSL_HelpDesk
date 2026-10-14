@@ -527,18 +527,32 @@ function autoDetourKm(start, destination) {
 }
 
 /**
+ * On a long trip, sites close to the start cost almost no extra distance,
+ * so every branch in Colombo would look "on the way" to Jaffna. Those are
+ * for a local run: a trip of 100 km or more leaves out the first 20% of it,
+ * up to 60 km (60 km for Jaffna, ~33 km for Haputale). Shorter trips keep
+ * everything.
+ */
+function autoMinFromStartKm(start, destination) {
+  if (!isPoint(start) || !isPoint(destination)) return 0;
+  const trip = roadKm(start, destination);
+  return trip < 100 ? 0 : Math.min(60, Math.round(trip * 0.2));
+}
+
+/**
  * Which candidates are worth calling at on a trip from start to
  * destination: those costing at most maxDetourKm extra (autoDetourKm() when
- * not given). Overdue ones first,
- * then the smallest detour. Candidates without a position are skipped.
- * Each result is the candidate plus { detourKm, overdue }.
+ * not given) and at least minFromStartKm from the start. Overdue ones
+ * first, then the smallest detour. Candidates without a position are
+ * skipped. Each result is the candidate plus { detourKm, overdue }.
  */
-function nearbyStops(start, destination, candidates, { maxDetourKm = null, today = new Date() } = {}) {
+function nearbyStops(start, destination, candidates, { maxDetourKm = null, minFromStartKm = 0, today = new Date() } = {}) {
   if (!isPoint(start) || !isPoint(destination)) return [];
   const limit = Number.isFinite(maxDetourKm) && maxDetourKm > 0 ? maxDetourKm : autoDetourKm(start, destination);
   const todayKey = localDateKey(today);
   return (candidates || [])
     .filter(isPoint)
+    .filter((c) => !(minFromStartKm > 0) || roadKm(start, c) >= minFromStartKm)
     .map((c) => ({ ...c, detourKm: detourKm(start, destination, c), overdue: Boolean(c.dueBy && c.dueBy < todayKey) }))
     .filter((c) => c.detourKm <= limit)
     .sort((a, b) => Number(b.overdue) - Number(a.overdue) || a.detourKm - b.detourKm);
@@ -944,6 +958,7 @@ if (typeof module !== "undefined" && module.exports) {
     roadKm,
     detourKm,
     autoDetourKm,
+    autoMinFromStartKm,
     nearbyStops,
     orderStops,
     tripHours,
